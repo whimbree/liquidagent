@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>liquid</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; height: 100dvh; display: flex; flex-direction: column;
+    background: #101014; color: #e6e6ea;
+    font: 15px/1.5 system-ui, sans-serif;
+  }
+  header {
+    padding: 0.6rem 1rem; border-bottom: 1px solid #26262e;
+    font-weight: 600; letter-spacing: 0.02em; display: flex; gap: 0.5rem; align-items: baseline;
+  }
+  header small { color: #7a7a88; font-weight: 400; }
+  #status { margin-left: auto; font-size: 0.8rem; color: #7a7a88; }
+  #log { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
+  .msg { max-width: 46rem; padding: 0.55rem 0.8rem; border-radius: 10px; white-space: pre-wrap; word-wrap: break-word; }
+  .user { align-self: flex-end; background: #2b3a5c; }
+  .bot { align-self: flex-start; background: #1c1c24; }
+  .tool { align-self: flex-start; color: #8a8a99; font-size: 0.8rem; padding: 0 0.8rem; }
+  .error { align-self: flex-start; background: #3a1c1c; color: #f0b0b0; }
+  form { display: flex; gap: 0.5rem; padding: 0.75rem 1rem; border-top: 1px solid #26262e; }
+  input {
+    flex: 1; padding: 0.6rem 0.8rem; border-radius: 8px; border: 1px solid #33333e;
+    background: #17171d; color: inherit; font: inherit; outline: none;
+  }
+  input:focus { border-color: #4a5a8c; }
+  button {
+    padding: 0.6rem 1.1rem; border-radius: 8px; border: 0; background: #3d5296;
+    color: white; font: inherit; cursor: pointer;
+  }
+  button:disabled { opacity: 0.5; cursor: default; }
+</style>
+</head>
+<body>
+<header>liquid <small>phase 0 walking skeleton</small><span id="status">connecting…</span></header>
+<div id="log"></div>
+<form id="form">
+  <input id="input" placeholder="Talk to your agent…" autocomplete="off" autofocus>
+  <button id="send" type="submit" disabled>Send</button>
+</form>
+<script>
+  const log = document.getElementById("log");
+  const form = document.getElementById("form");
+  const input = document.getElementById("input");
+  const send = document.getElementById("send");
+  const status = document.getElementById("status");
+
+  let currentBot = null;
+  const RECONNECT_DELAY_MS = 1500;
+
+  function bubble(cls, text) {
+    const el = document.createElement("div");
+    el.className = "msg " + cls;
+    el.textContent = text;
+    log.appendChild(el);
+    log.scrollTop = log.scrollHeight;
+    return el;
+  }
+
+  function connect() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+    ws.onopen = () => { status.textContent = "connected"; send.disabled = false; };
+    ws.onclose = () => {
+      status.textContent = "disconnected — retrying…";
+      send.disabled = true;
+      setTimeout(connect, RECONNECT_DELAY_MS);
+    };
+    ws.onmessage = (raw) => {
+      let ev;
+      try { ev = JSON.parse(raw.data); } catch { return; }
+      switch (ev.type) {
+        case "token":
+          if (!currentBot) currentBot = bubble("bot", "");
+          currentBot.textContent += ev.text;
+          log.scrollTop = log.scrollHeight;
+          break;
+        case "tool":
+          bubble("tool", `⚙ ${ev.name} (${ev.status})`);
+          break;
+        case "done":
+          currentBot = null;
+          break;
+        case "error":
+          bubble("error", ev.message);
+          currentBot = null;
+          break;
+      }
+    };
+
+    form.onsubmit = (e) => {
+      e.preventDefault();
+      const content = input.value.trim();
+      if (!content || ws.readyState !== WebSocket.OPEN) return;
+      bubble("user", content);
+      currentBot = null;
+      ws.send(JSON.stringify({ type: "user_message", content }));
+      input.value = "";
+    };
+  }
+
+  connect();
+</script>
+</body>
+</html>

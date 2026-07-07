@@ -1,0 +1,19 @@
+# Rust
+/target
+
+# Bun / Node
+node_modules/
+
+# Local agent workspace (created on first run, not part of the platform)
+dev-workspace/
+
+# Nix
+result
+result-*
+
+# Secrets
+.env
+
+# Build outputs
+dist/
+dist-chat/
