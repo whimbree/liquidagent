@@ -6,7 +6,13 @@
   outputs = { self, nixpkgs }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" ];
-      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system:
+        f (import nixpkgs {
+          inherit system;
+          # claude-code is unfree in nixpkgs; allow exactly it, nothing else.
+          config.allowUnfreePredicate = pkg:
+            builtins.elem (nixpkgs.lib.getName pkg) [ "claude-code" ];
+        }));
       # Keep build junk and local state out of every derivation's src.
       excludedNames = [ "target" "node_modules" "dev-workspace" "result" ".git" ];
       sourceFilter = path: type: !(builtins.elem (baseNameOf path) excludedNames);
