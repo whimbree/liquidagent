@@ -90,7 +90,7 @@ pub async fn list_apps(State(state): State<AppState>) -> Json<serde_json::Value>
 
 /// Manifests + live backend status, as sent to clients (REST and WS both).
 pub fn enriched_apps(state: &AppState) -> Vec<serde_json::Value> {
-    let apps = scan_apps(&state.workspace_dir);
+    let apps = scan_apps(&state.served_dir);
     *state.apps_cache.lock().expect("apps cache poisoned") = apps.clone();
     apps.into_iter()
         .map(|app| {
@@ -127,8 +127,9 @@ async fn serve(state: AppState, app: String, path: String) -> Response {
     let Some(safe_relative) = sanitize_relative(relative) else {
         return StatusCode::NOT_FOUND.into_response();
     };
+    // Served from the deployed worktree, not the live workspace.
     let full = state
-        .workspace_dir
+        .served_dir
         .join(APPS_DIR)
         .join(&app)
         .join(&safe_relative);

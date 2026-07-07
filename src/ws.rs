@@ -63,6 +63,10 @@ pub enum ServerEvent {
         title: String,
         body: String,
     },
+    /// The deploy pipeline's state changed (reviewing / rejected / clean).
+    Pipeline {
+        status: crate::deploy::PipelineStatus,
+    },
 }
 
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {

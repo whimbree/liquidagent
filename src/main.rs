@@ -5,6 +5,7 @@ mod auth;
 mod backends;
 mod config;
 mod db;
+mod deploy;
 mod push;
 mod scheduler;
 mod ws;
@@ -69,9 +70,15 @@ pub struct AppState {
     pub db: Db,
     pub agent: Agent,
     pub client_events: broadcast::Sender<ServerEvent>,
+    /// Where the agent works and commits. Memory files, SHELL.json, CRONS are
+    /// read live from here (never gated by the pipeline).
     pub workspace_dir: PathBuf,
+    /// Where apps are served from and backends run: the deployed worktree.
+    pub served_dir: PathBuf,
     pub apps_cache: Arc<Mutex<Vec<apps::AppManifest>>>,
     pub backends: Arc<backends::BackendManager>,
+    pub deploy: Arc<deploy::DeployManager>,
+    pub review_command: Vec<String>,
     pub http_client: ProxyClient,
 }
 
@@ -91,21 +98,38 @@ async fn main() -> anyhow::Result<()> {
     let agent = Agent::start(&config);
     let (client_events, _) = broadcast::channel(CLIENT_EVENT_CAPACITY);
 
-    let backends = backends::BackendManager::new(config.workspace_dir.clone(), config.port);
+    let saved_mode = db.get_setting("pipeline_mode").ok().flatten();
+    let deploy = Arc::new(
+        deploy::DeployManager::init(
+            &config.workspace_dir,
+            &config.data_dir,
+            config.pipeline_mode,
+            saved_mode,
+        )
+        .context("initializing deploy pipeline")?,
+    );
+    deploy.persist_mode(&db);
+    let served_dir = deploy.served_dir().to_path_buf();
+
+    let backends = backends::BackendManager::new(served_dir.clone(), config.port);
     let http_client: ProxyClient = hyper_util::client::legacy::Client::builder(
         hyper_util::rt::TokioExecutor::new(),
     )
     .build_http();
 
-    let initial_apps = apps::scan_apps(&config.workspace_dir);
+    // Apps are served from the deployed worktree, not the live workspace.
+    let initial_apps = apps::scan_apps(&served_dir);
     sync_backends(&backends, &initial_apps);
     let state = AppState {
         db,
         agent,
         client_events,
         workspace_dir: config.workspace_dir.clone(),
+        served_dir,
         apps_cache: Arc::new(Mutex::new(initial_apps)),
         backends,
+        deploy,
+        review_command: config.review_command.clone(),
         http_client,
     };
 
@@ -132,6 +156,14 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/kv/{app}", get(apps::kv_list))
         .route("/api/shell", get(apps::shell_get).put(apps::shell_put))
+        .route(
+            "/api/pipeline",
+            get(api::pipeline_status).put(api::set_pipeline_mode),
+        )
+        .route(
+            "/api/pipeline/approve",
+            axum::routing::post(api::pipeline_approve),
+        )
         .route("/api/push/key", get(push::public_key))
         .route("/api/push/subscribe", axum::routing::post(push::subscribe))
         .route(
@@ -294,32 +326,145 @@ async fn record_agent_events(state: AppState) {
                         push::notify_all(&state, "liquid ⏰", &snippet).await;
                     }
                 }
-                // The agent touched files — apps and backends may have changed.
+                // The agent touched files — run the deploy pipeline, which
+                // decides whether the change goes live now (vibe / non-app) or
+                // needs review (reviewed mode + apps/ changed).
                 if used_file_tools {
-                    let fresh = apps::scan_apps(&state.workspace_dir);
-                    // Always reconcile backends: a file edit inside an
-                    // existing backend changes no manifest but needs a restart.
-                    sync_backends(&state.backends, &fresh);
-                    let changed = {
-                        let mut cache = state.apps_cache.lock().expect("apps cache poisoned");
-                        if *cache == fresh {
-                            false
-                        } else {
-                            *cache = fresh;
-                            true
-                        }
-                    };
-                    if changed {
-                        let _ = state.client_events.send(ServerEvent::AppsChanged {
-                            apps: apps::enriched_apps(&state),
-                        });
-                    }
+                    reconcile_deploy(&state, conversation_id).await;
                 }
                 ServerEvent::Done { conversation_id }
             }
         };
         // No connected clients is fine; the recorder already persisted.
         let _ = state.client_events.send(server_event);
+    }
+}
+
+/// Run the pipeline after the agent commits, then refresh served apps.
+/// `origin_conversation` is where a rejection notice is posted.
+async fn reconcile_deploy(state: &AppState, origin_conversation: i64) {
+    match state.deploy.reconcile() {
+        Ok(None) => refresh_served_apps(state), // deployed (or nothing to do)
+        Ok(Some(candidate)) => {
+            // reviewed mode: an app change is gated. Run the reviewer.
+            review_candidate(state, &candidate, origin_conversation).await;
+        }
+        Err(err) => warn!("deploy reconcile failed: {err:#}"),
+    }
+}
+
+/// Run the reviewer subagent on a gated candidate commit and act on its
+/// verdict. The diff is computed by the supervisor (never supplied by the
+/// agent); the review record lands in supervisor-owned pipeline storage.
+async fn review_candidate(state: &AppState, candidate: &str, origin_conversation: i64) {
+    let _ = state.client_events.send(ServerEvent::Pipeline {
+        status: state.deploy.status(),
+    });
+
+    let diff = match state.deploy.review_diff() {
+        Ok(diff) => diff,
+        Err(err) => {
+            warn!("could not compute review diff: {err:#}");
+            return;
+        }
+    };
+
+    let (verdict, reasoning) = run_reviewer(&state.review_command, &diff).await;
+    state.deploy.record_review(candidate, &verdict, &reasoning);
+
+    if verdict == "APPROVED" {
+        if let Err(err) = state.deploy.deploy(candidate) {
+            warn!("approved deploy failed: {err:#}");
+            return;
+        }
+        refresh_served_apps(state);
+        push::notify_all(state, "liquid ✓", "Reviewed and deployed a change").await;
+    } else {
+        state.deploy.mark_rejected(candidate, &reasoning);
+        let msg = format!(
+            "⚠️ Review rejected the latest change — it is NOT live. Reason:\n{reasoning}\n\n\
+             Ask me to fix it, or approve it anyway from the pipeline banner."
+        );
+        let _ = state.db.append_message(origin_conversation, "scheduled", &msg);
+        push::notify_all(state, "liquid ⚠️", "A change was rejected in review").await;
+    }
+    let _ = state.client_events.send(ServerEvent::Pipeline {
+        status: state.deploy.status(),
+    });
+}
+
+/// Spawn the review command, feed it the diff on stdin, parse `{verdict,
+/// reasoning}` from stdout. Any failure is a conservative REJECTED so unre-
+/// viewable code never auto-deploys.
+async fn run_reviewer(command: &[String], diff: &str) -> (String, String) {
+    use tokio::io::AsyncWriteExt;
+
+    let (program, args) = command.split_first().expect("review command non-empty");
+    let mut child = match tokio::process::Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::inherit())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) => return ("REJECTED".into(), format!("could not start reviewer: {err}")),
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(diff.as_bytes()).await;
+        drop(stdin); // EOF
+    }
+    let output = match child.wait_with_output().await {
+        Ok(output) => output,
+        Err(err) => return ("REJECTED".into(), format!("reviewer failed: {err}")),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The verdict is the last non-empty JSON line.
+    let parsed = stdout
+        .lines()
+        .rev()
+        .find_map(|line| serde_json::from_str::<serde_json::Value>(line.trim()).ok());
+    match parsed {
+        Some(value) => {
+            let verdict = value
+                .get("verdict")
+                .and_then(|v| v.as_str())
+                .unwrap_or("REJECTED")
+                .to_uppercase();
+            let reasoning = value
+                .get("reasoning")
+                .and_then(|v| v.as_str())
+                .unwrap_or("(no reasoning provided)")
+                .to_string();
+            let verdict = if verdict == "APPROVED" { "APPROVED" } else { "REJECTED" };
+            (verdict.to_string(), reasoning)
+        }
+        None => ("REJECTED".into(), "reviewer produced no parseable verdict".into()),
+    }
+}
+
+/// Public shim so the pipeline-approve endpoint can refresh served apps.
+pub fn refresh_served_apps_pub(state: &AppState) {
+    refresh_served_apps(state);
+}
+
+/// Rescan the deployed worktree, reconcile backends, broadcast changes.
+fn refresh_served_apps(state: &AppState) {
+    let fresh = apps::scan_apps(&state.served_dir);
+    sync_backends(&state.backends, &fresh);
+    let changed = {
+        let mut cache = state.apps_cache.lock().expect("apps cache poisoned");
+        if *cache == fresh {
+            false
+        } else {
+            *cache = fresh;
+            true
+        }
+    };
+    if changed {
+        let _ = state.client_events.send(ServerEvent::AppsChanged {
+            apps: apps::enriched_apps(state),
+        });
     }
 }
 

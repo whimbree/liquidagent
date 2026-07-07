@@ -18,6 +18,11 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// Command used to spawn the agent harness child process.
     pub agent_command: Vec<String>,
+    /// Command used to run a one-shot code review (diff on stdin, verdict JSON
+    /// on stdout).
+    pub review_command: Vec<String>,
+    /// Default deploy pipeline mode (overridden by a saved DB setting).
+    pub pipeline_mode: crate::deploy::PipelineMode,
 }
 
 impl Config {
@@ -47,11 +52,28 @@ impl Config {
         let agent_command: Vec<String> = raw_command.split_whitespace().map(String::from).collect();
         anyhow::ensure!(!agent_command.is_empty(), "agent command must not be empty");
 
+        let raw_review = match std::env::var("LIQUID_REVIEW_CMD") {
+            Ok(custom) => custom,
+            Err(_) if std::env::var("LIQUID_FAKE_AGENT").is_ok() => {
+                format!("bun run {REPO_ROOT}/workspace/agent/fake-review.ts")
+            }
+            Err(_) => format!("bun run {REPO_ROOT}/workspace/agent/review.ts"),
+        };
+        let review_command: Vec<String> = raw_review.split_whitespace().map(String::from).collect();
+        anyhow::ensure!(!review_command.is_empty(), "review command must not be empty");
+
+        let pipeline_mode = std::env::var("LIQUID_PIPELINE_MODE")
+            .ok()
+            .and_then(|s| crate::deploy::PipelineMode::parse(&s))
+            .unwrap_or(crate::deploy::PipelineMode::Vibe);
+
         Ok(Self {
             port,
             workspace_dir,
             data_dir,
             agent_command,
+            review_command,
+            pipeline_mode,
         })
     }
 }

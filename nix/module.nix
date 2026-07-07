@@ -50,6 +50,16 @@ in
       '';
     };
 
+    pipelineMode = lib.mkOption {
+      type = lib.types.enum [ "vibe" "reviewed" ];
+      default = "vibe";
+      description = ''
+        Default deploy pipeline mode. vibe = commit ships immediately;
+        reviewed = a reviewer subagent gates app changes before they go live.
+        Changeable at runtime from the shell; this sets the initial value.
+      '';
+    };
+
     environmentFile = lib.mkOption {
       type = lib.types.nullOr lib.types.path;
       default = null;
@@ -89,7 +99,10 @@ in
         LIQUID_DATA_DIR = "${cfg.dataDir}/data";
         LIQUID_AGENT_CMD =
           "${pkgs.bun}/bin/bun run ${packages.liquid-agent}/share/liquid-agent/harness.ts";
+        LIQUID_REVIEW_CMD =
+          "${pkgs.bun}/bin/bun run ${packages.liquid-agent}/share/liquid-agent/review.ts";
         LIQUID_CLAUDE_BIN = "${cfg.claudePackage}/bin/claude";
+        LIQUID_PIPELINE_MODE = cfg.pipelineMode;
       };
 
       serviceConfig = {

@@ -123,3 +123,44 @@ pub async fn delete_conversation(
     state.db.delete_conversation(id)?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+// --- pipeline endpoints -----------------------------------------------------------
+
+pub async fn pipeline_status(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!({
+        "mode": state.deploy.mode(),
+        "status": state.deploy.status(),
+    }))
+}
+
+#[derive(Deserialize)]
+pub struct ModeBody {
+    mode: String,
+}
+
+pub async fn set_pipeline_mode(
+    State(state): State<AppState>,
+    Json(body): Json<ModeBody>,
+) -> ApiResult<StatusCode> {
+    let Some(mode) = crate::deploy::PipelineMode::parse(&body.mode) else {
+        return Ok(StatusCode::BAD_REQUEST);
+    };
+    state.deploy.set_mode(mode);
+    state.deploy.persist_mode(&state.db);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Human override: deploy the currently-rejected candidate anyway.
+pub async fn pipeline_approve(State(state): State<AppState>) -> ApiResult<StatusCode> {
+    let candidate = match state.deploy.status() {
+        crate::deploy::PipelineStatus::Rejected { candidate, .. } => candidate,
+        _ => return Ok(StatusCode::CONFLICT),
+    };
+    state.deploy.record_review(&candidate, "APPROVED (human override)", "Deployed by the owner.");
+    state.deploy.deploy(&candidate)?;
+    crate::refresh_served_apps_pub(&state);
+    let _ = state.client_events.send(crate::ws::ServerEvent::Pipeline {
+        status: state.deploy.status(),
+    });
+    Ok(StatusCode::NO_CONTENT)
+}
