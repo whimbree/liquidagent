@@ -1,7 +1,7 @@
 use data_encoding::HEXLOWER;
 use rand::RngCore;
 use scrypt::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
-use scrypt::Scrypt;
+use scrypt::{Params, Scrypt};
 use sha2::{Digest, Sha256};
 
 use crate::db::Db;
@@ -9,6 +9,16 @@ use crate::db::Db;
 pub const SESSION_TTL_SECS: i64 = 7 * 24 * 60 * 60;
 const PASSWORD_HASH_KEY: &str = "password_hash";
 const TOKEN_BYTES: usize = 32;
+
+/// scrypt work factor. The crate's `recommended` (log2_n = 17, ~128 MiB) is
+/// tuned for release-mode server hardware and takes ~10s in a debug build,
+/// making local dev and login miserable. log2_n = 15 (32 MiB, memory-hard —
+/// still far stronger than bcrypt) is the right balance for a single-user
+/// personal tool that also sits behind an SSO gateway: ~1s in debug,
+/// sub-300ms in release. r = 8, p = 1, 32-byte output.
+fn scrypt_params() -> Params {
+    Params::new(15, 8, 1, 32).expect("valid scrypt params")
+}
 
 pub fn password_is_set(db: &Db) -> anyhow::Result<bool> {
     Ok(db.get_setting(PASSWORD_HASH_KEY)?.is_some())
@@ -18,7 +28,13 @@ pub fn set_password(db: &Db, password: &str) -> anyhow::Result<()> {
     anyhow::ensure!(password.len() >= 8, "password must be at least 8 characters");
     let salt = SaltString::generate(&mut rand08());
     let hash = Scrypt
-        .hash_password(password.as_bytes(), &salt)
+        .hash_password_customized(
+            password.as_bytes(),
+            None,
+            None,
+            scrypt_params(),
+            &salt,
+        )
         .map_err(|err| anyhow::anyhow!("hashing password: {err}"))?
         .to_string();
     db.set_setting(PASSWORD_HASH_KEY, &hash)
@@ -94,6 +110,19 @@ mod tests {
         assert!(password_is_set(&db).unwrap());
         assert!(verify_password(&db, "correct horse battery").unwrap());
         assert!(!verify_password(&db, "wrong password").unwrap());
+    }
+
+    #[test]
+    fn password_hash_uses_tuned_params_not_the_slow_default() {
+        let db = Db::open_in_memory().unwrap();
+        set_password(&db, "a strong enough password").unwrap();
+        let stored = db.get_setting(PASSWORD_HASH_KEY).unwrap().unwrap();
+        // PHC scrypt encodes ln,r,p — log2_n must be our 15, not the crate
+        // default 17 (which makes debug login ~10s).
+        assert!(
+            stored.contains("ln=15,r=8,p=1"),
+            "unexpected scrypt params in hash: {stored}"
+        );
     }
 
     #[test]
