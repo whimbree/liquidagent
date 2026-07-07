@@ -33,5 +33,6 @@ for await (const request of readRequests()) {
     emit({ type: "token", id: request.id, text: `${word} ` });
     await Bun.sleep(TOKEN_DELAY_MS);
   }
-  emit({ type: "done", id: request.id, used_file_tools: false });
+  // Claim file-tool use so the supervisor's app rescan path gets exercised.
+  emit({ type: "done", id: request.id, used_file_tools: true });
 }

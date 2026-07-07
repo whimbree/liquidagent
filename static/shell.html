@@ -1,0 +1,527 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>liquid</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg:#101014; --panel:#17171d; --line:#26262e; --dim:#7a7a88;
+    --accent:#3d5296; --accent-soft:#232335;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; height:100dvh; overflow:hidden; background:var(--bg); color:#e6e6ea;
+         font:15px/1.5 system-ui,sans-serif; }
+  button { font:inherit; border:0; border-radius:8px; cursor:pointer; color:white;
+           background:var(--accent); padding:0.55rem 1rem; }
+  button:disabled { opacity:0.5; cursor:default; }
+  input { font:inherit; color:inherit; background:var(--panel); border:1px solid #33333e;
+          border-radius:8px; padding:0.6rem 0.8rem; outline:none; }
+  input:focus { border-color:#4a5a8c; }
+
+  /* ---- login ---- */
+  #login { height:100%; display:flex; flex-direction:column; align-items:center;
+           justify-content:center; gap:0.9rem; }
+  #login h1 { font-size:1.8rem; margin:0; letter-spacing:0.04em; }
+  #login p { color:var(--dim); margin:0; }
+  #login form { display:flex; flex-direction:column; gap:0.6rem; width:min(20rem,85vw); }
+  #login .err { color:#f0a0a0; min-height:1.2em; font-size:0.85rem; }
+
+  /* ---- shell ---- */
+  #shell { display:none; height:100%; position:relative; }
+  #shell.active { display:block; }
+
+  /* home grid */
+  #home { position:absolute; inset:0; overflow-y:auto; padding:2.2rem 1.6rem 6rem; }
+  #home h2 { font-weight:500; font-size:0.85rem; letter-spacing:0.14em; color:var(--dim);
+             text-transform:uppercase; margin:0 0 1.1rem; }
+  #grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(5.2rem, 1fr));
+          gap:1.1rem 0.6rem; max-width:60rem; }
+  .appicon { display:flex; flex-direction:column; align-items:center; gap:0.45rem;
+             cursor:pointer; border-radius:12px; padding:0.6rem 0.2rem; background:transparent; }
+  .appicon:hover { background:#ffffff0d; }
+  .appicon .glyph { width:3.6rem; height:3.6rem; border-radius:16px; background:var(--panel);
+                    border:1px solid var(--line); display:flex; align-items:center;
+                    justify-content:center; font-size:1.9rem;
+                    box-shadow:0 4px 14px rgba(0,0,0,0.35); }
+  .appicon .label { font-size:0.78rem; color:#c9c9d4; text-align:center; max-width:6.4rem;
+                    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  @keyframes pulse { 50% { opacity:0.35; } }
+  #empty { color:var(--dim); max-width:26rem; line-height:1.7; }
+  #empty b { color:#c9c9d4; }
+
+  /* windows (desktop) */
+  .window { position:absolute; min-width:280px; min-height:200px; background:var(--panel);
+            border:1px solid #30303c; border-radius:12px; display:flex; flex-direction:column;
+            box-shadow:0 12px 40px rgba(0,0,0,0.55); resize:both; overflow:hidden; }
+  .window.focused { border-color:#46466a; }
+  .titlebar { display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.65rem;
+              background:#1d1d26; border-bottom:1px solid var(--line); cursor:grab;
+              user-select:none; touch-action:none; }
+  .titlebar:active { cursor:grabbing; }
+  .titlebar .ticon { font-size:0.95rem; }
+  .titlebar .tname { font-size:0.85rem; color:#c9c9d4; overflow:hidden;
+                     text-overflow:ellipsis; white-space:nowrap; flex:1; }
+  .titlebar button { background:transparent; color:var(--dim); padding:0.1rem 0.35rem;
+                     border-radius:6px; font-size:0.9rem; }
+  .titlebar button:hover { background:#ffffff14; color:white; }
+  .window iframe { flex:1; border:0; width:100%; background:var(--bg); }
+  .window.dragging iframe { pointer-events:none; }
+
+  /* mobile fullscreen app */
+  #mobileapp { display:none; position:absolute; inset:0; z-index:40; background:var(--bg);
+               flex-direction:column; }
+  #mobileapp.open { display:flex; }
+  #mobileapp header { display:flex; align-items:center; gap:0.6rem; padding:0.5rem 0.8rem;
+                      border-bottom:1px solid var(--line); }
+  #mobileapp header b { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #mobileapp header button { background:transparent; color:#c9c9d4; padding:0.2rem 0.5rem; }
+  #mobileapp iframe { flex:1; border:0; width:100%; }
+
+  /* chat */
+  #chatfab { position:fixed; right:1.1rem; bottom:calc(1.1rem + env(safe-area-inset-bottom));
+             z-index:60; width:3.4rem; height:3.4rem; border-radius:50%; font-size:1.4rem;
+             box-shadow:0 8px 24px rgba(0,0,0,0.5); display:flex; align-items:center;
+             justify-content:center; }
+  #chatfab.busy { animation:pulse 1.2s ease-in-out infinite; }
+  #chat { position:fixed; top:0; right:0; height:100%; width:min(26rem, 100vw); z-index:50;
+          background:#131319; border-left:1px solid var(--line); display:flex;
+          flex-direction:column; transform:translateX(105%); transition:transform 0.22s ease;
+          box-shadow:-8px 0 30px rgba(0,0,0,0.4); }
+  #chat.open { transform:none; }
+  #chat header { display:flex; align-items:center; gap:0.4rem; padding:0.55rem 0.7rem;
+                 border-bottom:1px solid var(--line); }
+  #chat header b { flex:1; font-size:0.95rem; overflow:hidden; text-overflow:ellipsis;
+                   white-space:nowrap; }
+  #chat header button { background:transparent; color:var(--dim); padding:0.2rem 0.45rem; }
+  #chat header button:hover { color:white; }
+  #convlist { display:none; position:absolute; top:2.9rem; left:0.6rem; right:0.6rem; z-index:5;
+              background:#1b1b24; border:1px solid #30303c; border-radius:10px; max-height:50%;
+              overflow-y:auto; box-shadow:0 10px 30px rgba(0,0,0,0.5); }
+  #convlist.open { display:block; }
+  .conv { padding:0.5rem 0.7rem; cursor:pointer; display:flex; gap:0.4rem; font-size:0.88rem;
+          color:#c9c9d4; }
+  .conv:hover { background:#242432; }
+  .conv.active { color:white; background:var(--accent-soft); }
+  .conv span:first-child { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .conv .del { color:var(--dim); }
+  #log { flex:1; overflow-y:auto; padding:0.9rem; display:flex; flex-direction:column;
+         gap:0.7rem; }
+  .msg { max-width:100%; padding:0.5rem 0.75rem; border-radius:10px; overflow-wrap:break-word; }
+  .msg p { margin:0.35em 0; } .msg p:first-child { margin-top:0; } .msg p:last-child { margin-bottom:0; }
+  .user { align-self:flex-end; background:#2b3a5c; white-space:pre-wrap; }
+  .bot { align-self:flex-start; background:#1c1c24; }
+  .errmsg { align-self:flex-start; background:#3a1c1c; color:#f0b0b0; }
+  .msg code { background:#0c0c10; padding:0.1em 0.35em; border-radius:5px; font-size:0.88em; }
+  .msg pre { background:#0c0c10; padding:0.6rem 0.8rem; border-radius:8px; overflow-x:auto; }
+  .msg pre code { background:transparent; padding:0; }
+  .msg a { color:#8fa8e8; }
+  #status { font-size:0.75rem; color:var(--dim); padding:0 0.9rem 0.35rem; min-height:1.1rem; }
+  #composer { display:flex; gap:0.5rem; padding:0.6rem 0.8rem calc(0.6rem + env(safe-area-inset-bottom)); border-top:1px solid var(--line); }
+  #composer input { flex:1; min-width:0; }
+
+  /* toast */
+  #toast { position:fixed; left:50%; bottom:calc(1.4rem + env(safe-area-inset-bottom));
+           transform:translateX(-50%) translateY(200%); transition:transform 0.25s ease;
+           background:#22222e; border:1px solid #3a3a4a; padding:0.55rem 1rem;
+           border-radius:10px; z-index:70; font-size:0.9rem; box-shadow:0 8px 24px rgba(0,0,0,0.5); }
+  #toast.show { transform:translateX(-50%); }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h1>liquid</h1>
+  <p id="login-hint"></p>
+  <form id="login-form">
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+    <button type="submit">Enter</button>
+    <div class="err" id="login-err"></div>
+  </form>
+</div>
+
+<div id="shell">
+  <div id="home">
+    <h2>liquid</h2>
+    <div id="grid"></div>
+    <p id="empty" hidden>No apps yet. Open the chat <b>💬</b> and ask liquid to build one —
+      <i>“build me a calculator”</i> is a fine place to start. It will appear here, live.</p>
+  </div>
+
+  <div id="mobileapp">
+    <header><button id="mobileback">←</button><b id="mobiletitle"></b>
+      <button id="mobilereload">↻</button></header>
+    <iframe id="mobileframe" title="app"></iframe>
+  </div>
+
+  <button id="chatfab" title="Chat with liquid">💬</button>
+
+  <aside id="chat">
+    <header>
+      <button id="convtoggle" title="Conversations">☰</button>
+      <b id="convtitle">New conversation</b>
+      <button id="newchat" title="New conversation">＋</button>
+      <button id="chatclose" title="Close">✕</button>
+    </header>
+    <div id="convlist"></div>
+    <div id="log"></div>
+    <div id="status"></div>
+    <form id="composer">
+      <input id="input" placeholder="Ask liquid…" autocomplete="off">
+      <button id="send" type="submit" disabled>Send</button>
+    </form>
+  </aside>
+
+  <div id="toast"></div>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const RECONNECT_DELAY_MS = 1500;
+const LAYOUT_SAVE_DEBOUNCE_MS = 600;
+const isMobile = () => window.matchMedia("(max-width: 720px)").matches;
+
+/* ---------- tiny markdown ---------- */
+function escapeHtml(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+function renderMarkdown(src){
+  const parts = src.split(/```/); let html = "";
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) {
+      const body = parts[i].replace(/^[a-zA-Z0-9_-]*\n/, "");
+      html += `<pre><code>${escapeHtml(body)}</code></pre>`; continue;
+    }
+    let t = escapeHtml(parts[i]);
+    t = t.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    t = t.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+    t = t.replace(/\bhttps?:\/\/[^\s<]+/g, u => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
+    html += t.split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g,"<br>")}</p>`).join("");
+  }
+  return html;
+}
+
+/* ---------- auth ---------- */
+let token = localStorage.getItem("liquid_token");
+async function api(path, options = {}) {
+  const headers = Object.assign({ "Content-Type": "application/json" }, options.headers);
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const response = await fetch(path, Object.assign({}, options, { headers }));
+  if (response.status === 401) { showLogin(false); throw new Error("unauthorized"); }
+  return response;
+}
+let passwordIsSet = true;
+async function boot() {
+  const status = await (await fetch("/api/auth/status")).json();
+  passwordIsSet = status.password_set;
+  if (token && passwordIsSet) {
+    const probe = await fetch("/api/apps", { headers: { Authorization: `Bearer ${token}` } });
+    if (probe.ok) { enterShell((await probe.json()).apps); return; }
+    token = null; localStorage.removeItem("liquid_token");
+  }
+  showLogin(!passwordIsSet);
+}
+function showLogin(isSetup) {
+  $("shell").classList.remove("active");
+  $("login").style.display = "flex";
+  $("login-hint").textContent = isSetup
+    ? "First boot — choose a password (8+ characters)." : "Welcome back.";
+}
+$("login-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const password = $("password").value;
+  const path = passwordIsSet ? "/api/auth/login" : "/api/auth/setup";
+  const response = await fetch(path, { method:"POST",
+    headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ password }) });
+  const body = await response.json();
+  if (!response.ok) { $("login-err").textContent = body.error ?? "failed"; return; }
+  token = body.token; localStorage.setItem("liquid_token", token);
+  enterShell((await (await api("/api/apps")).json()).apps);
+};
+
+/* ---------- shell state ---------- */
+let apps = [];
+let layout = { windows: {} };   // appId -> {x,y,w,h}
+let zCounter = 10;
+const openWindows = new Map();  // appId -> element
+
+async function enterShell(appList) {
+  apps = appList;
+  $("login").style.display = "none";
+  $("shell").classList.add("active");
+  try { layout = await (await api("/api/shell")).json(); } catch { layout = {}; }
+  if (!layout || typeof layout !== "object") layout = {};
+  if (!layout.windows) layout.windows = {};
+  renderGrid();
+  if (!isMobile()) {
+    for (const id of Object.keys(layout.windows)) {
+      if (apps.some(a => a.id === id)) openApp(id, false);
+    }
+  }
+  await loadConversations();
+  connect();
+}
+
+function renderGrid() {
+  const grid = $("grid");
+  grid.innerHTML = "";
+  for (const app of apps) {
+    const el = document.createElement("div");
+    el.className = "appicon";
+    el.innerHTML = `<div class="glyph">${escapeHtml(app.icon)}</div>
+                    <div class="label">${escapeHtml(app.name)}</div>`;
+    el.title = app.description || app.name;
+    el.onclick = () => openApp(app.id, true);
+    grid.appendChild(el);
+  }
+  $("empty").hidden = apps.length > 0;
+}
+
+function toast(text) {
+  const el = $("toast");
+  el.textContent = text;
+  el.classList.add("show");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove("show"), 3200);
+}
+
+/* ---------- windows ---------- */
+let saveTimer = null;
+function scheduleLayoutSave() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    api("/api/shell", { method:"PUT", body: JSON.stringify(layout) }).catch(() => {});
+  }, LAYOUT_SAVE_DEBOUNCE_MS);
+}
+
+function openApp(id, focus) {
+  const app = apps.find(a => a.id === id);
+  if (!app) return;
+  if (isMobile()) { openMobileApp(app); return; }
+  if (openWindows.has(id)) { bringToFront(openWindows.get(id)); return; }
+
+  const saved = layout.windows[id] ?? {};
+  const win = document.createElement("div");
+  win.className = "window";
+  win.dataset.app = id;
+  const x = saved.x ?? (60 + openWindows.size * 40);
+  const y = saved.y ?? (60 + openWindows.size * 40);
+  win.style.cssText = `left:${x}px; top:${y}px; width:${saved.w ?? 420}px; height:${saved.h ?? 520}px; z-index:${++zCounter};`;
+  win.innerHTML = `
+    <div class="titlebar">
+      <span class="ticon">${escapeHtml(app.icon)}</span>
+      <span class="tname">${escapeHtml(app.name)}</span>
+      <button class="reload" title="Reload">↻</button>
+      <button class="close" title="Close">✕</button>
+    </div>
+    <iframe src="/app/${encodeURIComponent(id)}/" title="${escapeHtml(app.name)}"></iframe>`;
+  $("shell").appendChild(win);
+  openWindows.set(id, win);
+  layout.windows[id] = { x, y, w: win.offsetWidth, h: win.offsetHeight };
+  scheduleLayoutSave();
+
+  win.addEventListener("pointerdown", () => bringToFront(win));
+  win.querySelector(".close").onclick = (e) => {
+    e.stopPropagation();
+    win.remove(); openWindows.delete(id);
+    delete layout.windows[id];
+    scheduleLayoutSave();
+  };
+  win.querySelector(".reload").onclick = (e) => {
+    e.stopPropagation();
+    win.querySelector("iframe").src = `/app/${encodeURIComponent(id)}/`;
+  };
+
+  // drag via titlebar
+  const bar = win.querySelector(".titlebar");
+  bar.addEventListener("pointerdown", (e) => {
+    if (e.target.tagName === "BUTTON") return;
+    e.preventDefault();
+    bringToFront(win);
+    win.classList.add("dragging");
+    const startX = e.clientX - win.offsetLeft;
+    const startY = e.clientY - win.offsetTop;
+    const move = (ev) => {
+      win.style.left = Math.max(0, Math.min(ev.clientX - startX, innerWidth - 80)) + "px";
+      win.style.top  = Math.max(0, Math.min(ev.clientY - startY, innerHeight - 60)) + "px";
+    };
+    const up = () => {
+      removeEventListener("pointermove", move);
+      removeEventListener("pointerup", up);
+      win.classList.remove("dragging");
+      persistWindow(win);
+    };
+    addEventListener("pointermove", move);
+    addEventListener("pointerup", up);
+  });
+
+  // persist native CSS resize
+  new ResizeObserver(() => {
+    if (!openWindows.has(id)) return;
+    persistWindow(win);
+  }).observe(win);
+
+  if (focus) bringToFront(win);
+}
+
+function persistWindow(win) {
+  const id = win.dataset.app;
+  layout.windows[id] = {
+    x: win.offsetLeft, y: win.offsetTop, w: win.offsetWidth, h: win.offsetHeight,
+  };
+  scheduleLayoutSave();
+}
+
+function bringToFront(win) {
+  win.style.zIndex = ++zCounter;
+  document.querySelectorAll(".window").forEach(w => w.classList.toggle("focused", w === win));
+}
+
+/* ---------- mobile app view ---------- */
+function openMobileApp(app) {
+  $("mobiletitle").textContent = `${app.icon} ${app.name}`;
+  $("mobileframe").src = `/app/${encodeURIComponent(app.id)}/`;
+  $("mobileapp").classList.add("open");
+}
+$("mobileback").onclick = () => {
+  $("mobileapp").classList.remove("open");
+  $("mobileframe").src = "about:blank";
+};
+$("mobilereload").onclick = () => { $("mobileframe").src = $("mobileframe").src; };
+
+/* ---------- chat ---------- */
+let conversations = [];
+let activeConversation = null;
+let currentBot = null;
+let ws = null;
+
+async function loadConversations() {
+  conversations = (await (await api("/api/conversations")).json()).conversations;
+  if (conversations.length > 0) await openConversation(conversations[0].id);
+}
+function renderConvList() {
+  const box = $("convlist");
+  box.innerHTML = "";
+  for (const conv of conversations) {
+    const el = document.createElement("div");
+    el.className = "conv" + (conv.id === activeConversation ? " active" : "");
+    const label = document.createElement("span");
+    label.textContent = conv.title || "Untitled";
+    const del = document.createElement("span");
+    del.className = "del"; del.textContent = "✕";
+    del.onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Delete "${conv.title}"?`)) return;
+      await api(`/api/conversations/${conv.id}`, { method: "DELETE" });
+      conversations = conversations.filter(c => c.id !== conv.id);
+      if (activeConversation === conv.id) newConversation();
+      renderConvList();
+    };
+    el.append(label, del);
+    el.onclick = async () => { await openConversation(conv.id); $("convlist").classList.remove("open"); };
+    box.appendChild(el);
+  }
+}
+function bubble(cls, text, asMarkdown = false) {
+  const el = document.createElement("div");
+  el.className = "msg " + cls;
+  if (asMarkdown) el.innerHTML = renderMarkdown(text); else el.textContent = text;
+  $("log").appendChild(el);
+  $("log").scrollTop = $("log").scrollHeight;
+  return el;
+}
+async function openConversation(id) {
+  activeConversation = id; currentBot = null;
+  const conv = conversations.find(c => c.id === id);
+  $("convtitle").textContent = conv ? conv.title : "liquid";
+  renderConvList();
+  $("log").innerHTML = "";
+  const data = await (await api(`/api/conversations/${id}/messages`)).json();
+  for (const m of data.messages) {
+    if (m.role === "user") bubble("user", m.content);
+    else if (m.role === "assistant") bubble("bot", m.content, true);
+    else bubble("errmsg", m.content);
+  }
+}
+function newConversation() {
+  activeConversation = null; currentBot = null;
+  $("log").innerHTML = "";
+  $("convtitle").textContent = "New conversation";
+  renderConvList();
+  $("input").focus();
+}
+$("newchat").onclick = newConversation;
+$("convtoggle").onclick = () => { renderConvList(); $("convlist").classList.toggle("open"); };
+$("chatclose").onclick = () => $("chat").classList.remove("open");
+$("chatfab").onclick = () => {
+  $("chat").classList.toggle("open");
+  if ($("chat").classList.contains("open")) $("input").focus();
+};
+addEventListener("keydown", (e) => { if (e.key === "Escape") { $("chat").classList.remove("open"); $("convlist").classList.remove("open"); } });
+
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  ws.onopen = () => { $("send").disabled = false; };
+  ws.onclose = () => { $("send").disabled = true; setTimeout(connect, RECONNECT_DELAY_MS); };
+  ws.onmessage = (raw) => {
+    let ev; try { ev = JSON.parse(raw.data); } catch { return; }
+    if (ev.type === "apps_changed") {
+      const before = new Set(apps.map(a => a.id));
+      apps = ev.apps;
+      renderGrid();
+      const fresh = apps.filter(a => !before.has(a.id));
+      for (const app of fresh) toast(`${app.icon} ${app.name} is on your home screen`);
+      // drop windows of apps that no longer exist
+      for (const [id, win] of openWindows) {
+        if (!apps.some(a => a.id === id)) { win.remove(); openWindows.delete(id); }
+      }
+      return;
+    }
+    if (ev.type === "conversation_created") {
+      conversations.unshift({ id: ev.conversation_id, title: ev.title });
+      if (activeConversation === null) {
+        activeConversation = ev.conversation_id;
+        $("convtitle").textContent = ev.title;
+      }
+      renderConvList();
+      return;
+    }
+    if (ev.conversation_id !== activeConversation) return;
+    switch (ev.type) {
+      case "token": {
+        if (!currentBot) { currentBot = bubble("bot", ""); currentBot.dataset.raw = ""; }
+        currentBot.dataset.raw += ev.text;
+        currentBot.innerHTML = renderMarkdown(currentBot.dataset.raw);
+        $("log").scrollTop = $("log").scrollHeight;
+        break;
+      }
+      case "tool":
+        $("status").textContent = `⚙ ${ev.name}…`;
+        $("chatfab").classList.add("busy");
+        break;
+      case "done":
+        currentBot = null; $("status").textContent = "";
+        $("chatfab").classList.remove("busy");
+        break;
+      case "error":
+        bubble("errmsg", ev.message); currentBot = null;
+        $("status").textContent = ""; $("chatfab").classList.remove("busy");
+        break;
+    }
+  };
+}
+$("composer").onsubmit = (e) => {
+  e.preventDefault();
+  const content = $("input").value.trim();
+  if (!content || !ws || ws.readyState !== WebSocket.OPEN) return;
+  bubble("user", content);
+  currentBot = null;
+  ws.send(JSON.stringify({ type:"user_message", content, conversation_id: activeConversation }));
+  $("input").value = "";
+};
+
+boot();
+</script>
+</body>
+</html>

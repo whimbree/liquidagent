@@ -48,6 +48,10 @@ pub enum ServerEvent {
         conversation_id: i64,
         title: String,
     },
+    /// The set of installed apps changed (agent created/edited/removed one).
+    AppsChanged {
+        apps: Vec<crate::apps::AppManifest>,
+    },
 }
 
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {

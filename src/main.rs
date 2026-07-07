@@ -1,5 +1,6 @@
 mod agent;
 mod api;
+mod apps;
 mod auth;
 mod config;
 mod db;
@@ -7,7 +8,8 @@ mod ws;
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
 use axum::response::Html;
@@ -21,8 +23,8 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::ws::ServerEvent;
 
-/// The chat page is embedded at compile time — no runtime path discovery.
-const CHAT_PAGE: &str = include_str!("../static/chat.html");
+/// The shell page is embedded at compile time — no runtime path discovery.
+const SHELL_PAGE: &str = include_str!("../static/shell.html");
 
 /// Workspace template, embedded so first-run init needs no runtime paths.
 const WORKSPACE_TEMPLATE: &[(&str, &str)] = &[
@@ -41,6 +43,8 @@ pub struct AppState {
     pub db: Db,
     pub agent: Agent,
     pub client_events: broadcast::Sender<ServerEvent>,
+    pub workspace_dir: PathBuf,
+    pub apps_cache: Arc<Mutex<Vec<apps::AppManifest>>>,
 }
 
 #[tokio::main]
@@ -59,10 +63,13 @@ async fn main() -> anyhow::Result<()> {
     let agent = Agent::start(&config);
     let (client_events, _) = broadcast::channel(CLIENT_EVENT_CAPACITY);
 
+    let initial_apps = apps::scan_apps(&config.workspace_dir);
     let state = AppState {
         db,
         agent,
         client_events,
+        workspace_dir: config.workspace_dir.clone(),
+        apps_cache: Arc::new(Mutex::new(initial_apps)),
     };
 
     tokio::spawn(record_agent_events(state.clone()));
@@ -77,6 +84,15 @@ async fn main() -> anyhow::Result<()> {
             "/api/conversations/{id}/messages",
             get(api::list_messages),
         )
+        .route("/api/apps", get(apps::list_apps))
+        .route(
+            "/api/kv/{app}/{key}",
+            get(apps::kv_get)
+                .put(apps::kv_put)
+                .delete(apps::kv_delete),
+        )
+        .route("/api/kv/{app}", get(apps::kv_list))
+        .route("/api/shell", get(apps::shell_get).put(apps::shell_put))
         .route("/ws", get(ws::ws_handler))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -84,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
         ));
 
     let app = Router::new()
-        .route("/", get(|| async { Html(CHAT_PAGE) }))
+        .route("/", get(|| async { Html(SHELL_PAGE) }))
         .route(
             "/api/health",
             get(|| async { Json(serde_json::json!({ "status": "ok" })) }),
@@ -92,6 +108,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/status", get(api::auth_status))
         .route("/api/auth/setup", axum::routing::post(api::auth_setup))
         .route("/api/auth/login", axum::routing::post(api::auth_login))
+        // App static files are public: iframes and their relative asset
+        // fetches can't attach auth headers. Data stays behind /api auth.
+        .route("/app/{app}/", get(apps::serve_app_index))
+        .route("/app/{app}/{*path}", get(apps::serve_app_file))
         .merge(protected)
         .with_state(state);
 
@@ -162,11 +182,25 @@ async fn record_agent_events(state: AppState) {
                     message,
                 }
             }
-            AgentEvent::Done { .. } => {
+            AgentEvent::Done {
+                used_file_tools, ..
+            } => {
                 let content = buffers.remove(&conversation_id).unwrap_or_default();
                 if !content.is_empty() {
                     if let Err(err) = state.db.append_message(conversation_id, "assistant", &content) {
                         warn!("failed to persist assistant message: {err:#}");
+                    }
+                }
+                // The agent touched files — the app set may have changed.
+                if used_file_tools {
+                    let fresh = apps::scan_apps(&state.workspace_dir);
+                    let mut cache = state.apps_cache.lock().expect("apps cache poisoned");
+                    if *cache != fresh {
+                        *cache = fresh.clone();
+                        drop(cache);
+                        let _ = state
+                            .client_events
+                            .send(ServerEvent::AppsChanged { apps: fresh });
                     }
                 }
                 ServerEvent::Done { conversation_id }

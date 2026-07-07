@@ -1,0 +1,256 @@
+use std::path::{Component, Path, PathBuf};
+
+use axum::extract::{Path as UrlPath, State};
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use tracing::warn;
+
+use crate::AppState;
+
+const APPS_DIR: &str = "apps";
+const MANIFEST_FILE: &str = "app.json";
+const DEFAULT_ICON: &str = "📦";
+
+/// What the agent writes to apps/<id>/app.json.
+#[derive(Debug, Deserialize)]
+struct RawManifest {
+    name: String,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct AppManifest {
+    pub id: String,
+    pub name: String,
+    pub icon: String,
+    pub description: String,
+}
+
+/// Scan workspace/apps/*/app.json. Malformed manifests are skipped with a
+/// warning — a broken app must never take the shell down.
+pub fn scan_apps(workspace_dir: &Path) -> Vec<AppManifest> {
+    let apps_dir = workspace_dir.join(APPS_DIR);
+    let Ok(entries) = std::fs::read_dir(&apps_dir) else {
+        return Vec::new();
+    };
+    let mut apps: Vec<AppManifest> = entries
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            if !entry.file_type().ok()?.is_dir() {
+                return None;
+            }
+            let id = entry.file_name().to_str()?.to_string();
+            if !is_safe_app_id(&id) {
+                return None;
+            }
+            let dir = entry.path();
+            if !dir.join("index.html").exists() {
+                return None;
+            }
+            let manifest_path = dir.join(MANIFEST_FILE);
+            let raw = std::fs::read_to_string(&manifest_path).ok()?;
+            match serde_json::from_str::<RawManifest>(&raw) {
+                Ok(manifest) => Some(AppManifest {
+                    name: manifest.name,
+                    icon: manifest.icon.unwrap_or_else(|| DEFAULT_ICON.to_string()),
+                    description: manifest.description.unwrap_or_default(),
+                    id,
+                }),
+                Err(err) => {
+                    warn!("skipping app {id}: bad {MANIFEST_FILE}: {err}");
+                    None
+                }
+            }
+        })
+        .collect();
+    apps.sort_by(|a, b| a.id.cmp(&b.id));
+    apps
+}
+
+fn is_safe_app_id(id: &str) -> bool {
+    !id.is_empty()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+// --- endpoints -------------------------------------------------------------------
+
+pub async fn list_apps(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let apps = scan_apps(&state.workspace_dir);
+    *state.apps_cache.lock().expect("apps cache poisoned") = apps.clone();
+    Json(json!({ "apps": apps }))
+}
+
+/// GET /app/{app}/{*path} — static files from the app's directory.
+/// Traversal-safe: app id is charset-checked, every path component must be a
+/// plain name.
+pub async fn serve_app_file(
+    State(state): State<AppState>,
+    UrlPath((app, path)): UrlPath<(String, String)>,
+) -> Response {
+    serve(state, app, path).await
+}
+
+pub async fn serve_app_index(
+    State(state): State<AppState>,
+    UrlPath(app): UrlPath<String>,
+) -> Response {
+    serve(state, app, "index.html".to_string()).await
+}
+
+async fn serve(state: AppState, app: String, path: String) -> Response {
+    if !is_safe_app_id(&app) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let relative = if path.is_empty() { "index.html" } else { path.as_str() };
+    let Some(safe_relative) = sanitize_relative(relative) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let full = state
+        .workspace_dir
+        .join(APPS_DIR)
+        .join(&app)
+        .join(&safe_relative);
+    match tokio::fs::read(&full).await {
+        Ok(bytes) => {
+            let mime = mime_for(&safe_relative);
+            // Agent edits should show up on refresh — never cache app files.
+            (
+                [
+                    (header::CONTENT_TYPE, mime),
+                    (header::CACHE_CONTROL, "no-cache"),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Every component must be a normal name (no `..`, no absolute, no prefix).
+fn sanitize_relative(path: &str) -> Option<PathBuf> {
+    let candidate = Path::new(path);
+    let mut clean = PathBuf::new();
+    for component in candidate.components() {
+        match component {
+            Component::Normal(part) => clean.push(part),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    if clean.as_os_str().is_empty() {
+        None
+    } else {
+        Some(clean)
+    }
+}
+
+fn mime_for(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js" | "mjs") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("json") => "application/json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("txt" | "md") => "text/plain; charset=utf-8",
+        Some("woff2") => "font/woff2",
+        _ => "application/octet-stream",
+    }
+}
+
+// --- KV endpoints -------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct KvBody {
+    value: String,
+}
+
+pub async fn kv_get(
+    State(state): State<AppState>,
+    UrlPath((app, key)): UrlPath<(String, String)>,
+) -> Response {
+    match state.db.kv_get(&app, &key) {
+        Ok(Some(value)) => Json(json!({ "value": value })).into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(err) => {
+            warn!("kv_get failed: {err:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+pub async fn kv_put(
+    State(state): State<AppState>,
+    UrlPath((app, key)): UrlPath<(String, String)>,
+    Json(body): Json<KvBody>,
+) -> Response {
+    match state.db.kv_set(&app, &key, &body.value) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => {
+            warn!("kv_put failed: {err:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+pub async fn kv_delete(
+    State(state): State<AppState>,
+    UrlPath((app, key)): UrlPath<(String, String)>,
+) -> Response {
+    match state.db.kv_delete(&app, &key) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => {
+            warn!("kv_delete failed: {err:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+pub async fn kv_list(State(state): State<AppState>, UrlPath(app): UrlPath<String>) -> Response {
+    match state.db.kv_list(&app) {
+        Ok(keys) => Json(json!({ "keys": keys })).into_response(),
+        Err(err) => {
+            warn!("kv_list failed: {err:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+// --- shell layout (workspace/SHELL.json — agent-writable by design) ---------------
+
+const SHELL_FILE: &str = "SHELL.json";
+
+pub async fn shell_get(State(state): State<AppState>) -> Response {
+    match tokio::fs::read_to_string(state.workspace_dir.join(SHELL_FILE)).await {
+        Ok(contents) => match serde_json::from_str::<serde_json::Value>(&contents) {
+            Ok(value) => Json(value).into_response(),
+            Err(_) => Json(json!({})).into_response(),
+        },
+        Err(_) => Json(json!({})).into_response(),
+    }
+}
+
+pub async fn shell_put(
+    State(state): State<AppState>,
+    Json(layout): Json<serde_json::Value>,
+) -> Response {
+    let pretty = serde_json::to_string_pretty(&layout).unwrap_or_else(|_| "{}".to_string());
+    match tokio::fs::write(state.workspace_dir.join(SHELL_FILE), pretty).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(err) => {
+            warn!("failed to write {SHELL_FILE}: {err:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}

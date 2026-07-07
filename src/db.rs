@@ -31,6 +31,13 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
     created_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS kv (
+    app        TEXT NOT NULL,
+    key        TEXT NOT NULL,
+    value      TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (app, key)
+);
 ";
 
 #[derive(Clone, Debug, Serialize)]
@@ -192,6 +199,48 @@ impl Db {
             rusqlite::params![key, value],
         )?;
         Ok(())
+    }
+
+    // --- per-app key-value storage ----------------------------------------------
+
+    pub fn kv_get(&self, app: &str, key: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.lock();
+        let value = conn
+            .query_row(
+                "SELECT value FROM kv WHERE app = ?1 AND key = ?2",
+                rusqlite::params![app, key],
+                |row| row.get(0),
+            )
+            .map(Some)
+            .or_else(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        Ok(value)
+    }
+
+    pub fn kv_set(&self, app: &str, key: &str, value: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "INSERT INTO kv (app, key, value, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(app, key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+            rusqlite::params![app, key, value, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn kv_delete(&self, app: &str, key: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "DELETE FROM kv WHERE app = ?1 AND key = ?2",
+            rusqlite::params![app, key],
+        )?;
+        Ok(())
+    }
+
+    pub fn kv_list(&self, app: &str) -> anyhow::Result<Vec<String>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT key FROM kv WHERE app = ?1 ORDER BY key")?;
+        let rows = stmt.query_map([app], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     // --- auth sessions ---------------------------------------------------------
