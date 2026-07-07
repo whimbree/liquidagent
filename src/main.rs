@@ -335,7 +335,7 @@ async fn record_agent_events(state: AppState) {
                 // decides whether the change goes live now (vibe / non-app) or
                 // needs review (reviewed mode + apps/ changed).
                 if used_file_tools {
-                    reconcile_deploy(&state, conversation_id).await;
+                    reconcile_deploy(&state, conversation_id);
                 }
                 busy_conversation = None;
                 broadcast_busy(&state, conversation_id, false);
@@ -376,12 +376,17 @@ fn broadcast_busy(state: &AppState, conversation_id: i64, busy: bool) {
 
 /// Run the pipeline after the agent commits, then refresh served apps.
 /// `origin_conversation` is where a rejection notice is posted.
-async fn reconcile_deploy(state: &AppState, origin_conversation: i64) {
+fn reconcile_deploy(state: &AppState, origin_conversation: i64) {
     match state.deploy.reconcile() {
         Ok(None) => refresh_served_apps(state), // deployed (or nothing to do)
         Ok(Some(candidate)) => {
-            // reviewed mode: an app change is gated. Run the reviewer.
-            review_candidate(state, &candidate, origin_conversation).await;
+            // reviewed mode: an app change is gated. Run the reviewer in its
+            // own task — a review is a subprocess + model call and must not
+            // block the recorder loop (which streams every conversation).
+            let state = state.clone();
+            tokio::spawn(async move {
+                review_candidate(&state, &candidate, origin_conversation).await;
+            });
         }
         Err(err) => warn!("deploy reconcile failed: {err:#}"),
     }

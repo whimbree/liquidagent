@@ -42,6 +42,11 @@
           version = "0.1.0";
           src = cleanedSource ./.;
           cargoLock.lockFile = ./Cargo.lock;
+          # The deploy-pipeline tests shell out to git (worktree, commit, diff);
+          # git must be on PATH during the check phase, and HOME writable so
+          # git doesn't reject a missing config dir.
+          nativeCheckInputs = [ pkgs.git ];
+          preCheck = "export HOME=$TMPDIR";
           meta = {
             description = "Self-hosted AI agent and personal software factory";
             license = pkgs.lib.licenses.mit;
@@ -88,6 +93,37 @@
         liquidagent = import ./nix/module.nix self;
         default = liquidagent;
       };
+
+      # A real NixOS VM test: boots the module (with the offline fake agent so
+      # no credentials are needed) and verifies the service starts, binds its
+      # port, and serves /api/health with the expected fields. Validates the
+      # whole packaging + systemd + paths chain.  `nix build .#checks.x86_64-linux.module-boots`
+      checks = forAllSystems (pkgs:
+        nixpkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.system == "x86_64-linux") {
+          module-boots = pkgs.testers.runNixOSTest {
+            name = "liquidagent-boots";
+            # The test nodes inherit `pkgs` (which already allows claude-code
+            # via the forAllSystems import), so no nixpkgs.config here.
+            nodes.machine = { lib, ... }: {
+              imports = [ self.nixosModules.liquidagent ];
+              services.liquidagent.enable = true;
+              # Run the offline fake harness — proves the service boots and
+              # serves without needing Claude credentials in CI.
+              systemd.services.liquidagent.environment.LIQUID_AGENT_CMD =
+                lib.mkForce "${pkgs.bun}/bin/bun run ${(self.packages.${pkgs.stdenv.hostPlatform.system}.liquid-agent)}/share/liquid-agent/fake-harness.ts";
+              virtualisation.memorySize = 2048;
+            };
+            testScript = ''
+              machine.wait_for_unit("liquidagent.service")
+              machine.wait_for_open_port(3000)
+              machine.succeed("curl -sf http://localhost:3000/api/health | grep -q '\"status\":\"ok\"'")
+              machine.succeed("curl -sf http://localhost:3000/api/health | grep -q pipeline_mode")
+              # first-boot workspace + deployed worktree were created under the state dir
+              machine.succeed("test -d /var/lib/liquidagent/workspace/.git")
+              machine.succeed("test -d /var/lib/liquidagent/data/pipeline/deployed")
+            '';
+          };
+        });
 
       # Eval-only smoke check for the module:
       #   nix eval .#nixosConfigurations.smoke.config.systemd.services.liquidagent.serviceConfig.ExecStart
