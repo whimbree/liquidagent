@@ -1,0 +1,4 @@
+# Runtime state — never committed
+node_modules/
+data/
+.env

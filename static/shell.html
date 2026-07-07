@@ -43,8 +43,10 @@
   .appicon:hover { background:#ffffff0d; }
   .appicon .glyph { width:3.6rem; height:3.6rem; border-radius:16px; background:var(--panel);
                     border:1px solid var(--line); display:flex; align-items:center;
-                    justify-content:center; font-size:1.9rem;
+                    justify-content:center; font-size:1.9rem; position:relative;
                     box-shadow:0 4px 14px rgba(0,0,0,0.35); }
+  .appicon .badge { position:absolute; top:-0.3rem; right:-0.3rem; font-size:0.8rem;
+                    filter:drop-shadow(0 2px 4px rgba(0,0,0,0.6)); }
   .appicon .label { font-size:0.78rem; color:#c9c9d4; text-align:center; max-width:6.4rem;
                     overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   @keyframes pulse { 50% { opacity:0.35; } }
@@ -302,9 +304,12 @@ function renderGrid() {
   for (const app of apps) {
     const el = document.createElement("div");
     el.className = "appicon";
-    el.innerHTML = `<div class="glyph">${escapeHtml(app.icon)}</div>
+    const failed = app.backend && app.backend.state === "failed";
+    el.innerHTML = `<div class="glyph">${escapeHtml(app.icon)}${failed ? '<span class="badge">⚠️</span>' : ""}</div>
                     <div class="label">${escapeHtml(app.name)}</div>`;
-    el.title = app.description || app.name;
+    el.title = failed
+      ? `${app.name} — its backend crashed; ask liquid to fix it`
+      : (app.description || app.name);
     el.onclick = () => openApp(app.id, true);
     grid.appendChild(el);
   }

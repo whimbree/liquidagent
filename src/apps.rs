@@ -30,6 +30,7 @@ pub struct AppManifest {
     pub name: String,
     pub icon: String,
     pub description: String,
+    pub has_backend: bool,
 }
 
 /// Scan workspace/apps/*/app.json. Malformed manifests are skipped with a
@@ -60,6 +61,7 @@ pub fn scan_apps(workspace_dir: &Path) -> Vec<AppManifest> {
                     name: manifest.name,
                     icon: manifest.icon.unwrap_or_else(|| DEFAULT_ICON.to_string()),
                     description: manifest.description.unwrap_or_default(),
+                    has_backend: dir.join(crate::backends::BACKEND_ENTRY).exists(),
                     id,
                 }),
                 Err(err) => {
@@ -83,9 +85,21 @@ fn is_safe_app_id(id: &str) -> bool {
 // --- endpoints -------------------------------------------------------------------
 
 pub async fn list_apps(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(json!({ "apps": enriched_apps(&state) }))
+}
+
+/// Manifests + live backend status, as sent to clients (REST and WS both).
+pub fn enriched_apps(state: &AppState) -> Vec<serde_json::Value> {
     let apps = scan_apps(&state.workspace_dir);
     *state.apps_cache.lock().expect("apps cache poisoned") = apps.clone();
-    Json(json!({ "apps": apps }))
+    apps.into_iter()
+        .map(|app| {
+            let backend = app.has_backend.then(|| state.backends.status(&app.id)).flatten();
+            let mut value = serde_json::to_value(&app).expect("manifest serializes");
+            value["backend"] = serde_json::to_value(backend).expect("status serializes");
+            value
+        })
+        .collect()
 }
 
 /// GET /app/{app}/{*path} — static files from the app's directory.

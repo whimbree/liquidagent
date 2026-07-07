@@ -123,7 +123,7 @@ The desk becomes a real environment, not a demo.
 identical; ask the agent to redesign one while you're using another.
 **Est: ~2 weekends.**
 
-### M4 — "Apps with engines"
+### M4 — "Apps with engines" ✅ (shipped)
 
 Per-app backends, for apps that outgrow KV.
 

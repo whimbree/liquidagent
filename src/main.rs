@@ -2,6 +2,7 @@ mod agent;
 mod api;
 mod apps;
 mod auth;
+mod backends;
 mod config;
 mod db;
 mod ws;
@@ -31,12 +32,18 @@ const WORKSPACE_TEMPLATE: &[(&str, &str)] = &[
     ("MYSELF.md", include_str!("../default-workspace/MYSELF.md")),
     ("MYHUMAN.md", include_str!("../default-workspace/MYHUMAN.md")),
     ("MEMORY.md", include_str!("../default-workspace/MEMORY.md")),
+    (".gitignore", include_str!("../default-workspace/.gitignore")),
 ];
 
 // Phase 0 binds localhost only; your reverse proxy (with SSO) fronts it.
 const BIND_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
 const CLIENT_EVENT_CAPACITY: usize = 1024;
+
+pub type ProxyClient = hyper_util::client::legacy::Client<
+    hyper_util::client::legacy::connect::HttpConnector,
+    axum::body::Body,
+>;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -45,6 +52,8 @@ pub struct AppState {
     pub client_events: broadcast::Sender<ServerEvent>,
     pub workspace_dir: PathBuf,
     pub apps_cache: Arc<Mutex<Vec<apps::AppManifest>>>,
+    pub backends: Arc<backends::BackendManager>,
+    pub http_client: ProxyClient,
 }
 
 #[tokio::main]
@@ -63,13 +72,22 @@ async fn main() -> anyhow::Result<()> {
     let agent = Agent::start(&config);
     let (client_events, _) = broadcast::channel(CLIENT_EVENT_CAPACITY);
 
+    let backends = backends::BackendManager::new(config.workspace_dir.clone(), config.port);
+    let http_client: ProxyClient = hyper_util::client::legacy::Client::builder(
+        hyper_util::rt::TokioExecutor::new(),
+    )
+    .build_http();
+
     let initial_apps = apps::scan_apps(&config.workspace_dir);
+    sync_backends(&backends, &initial_apps);
     let state = AppState {
         db,
         agent,
         client_events,
         workspace_dir: config.workspace_dir.clone(),
         apps_cache: Arc::new(Mutex::new(initial_apps)),
+        backends,
+        http_client,
     };
 
     tokio::spawn(record_agent_events(state.clone()));
@@ -111,6 +129,20 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/login", axum::routing::post(api::auth_login))
         // App static files are public: iframes and their relative asset
         // fetches can't attach auth headers. Data stays behind /api auth.
+        // Backend proxy first — the static "api" segment outranks the
+        // wildcard, so /app/x/api/* reaches the app's backend.
+        .route(
+            "/app/{app}/api",
+            axum::routing::any(backends::proxy_api_root),
+        )
+        .route(
+            "/app/{app}/api/",
+            axum::routing::any(backends::proxy_api_root),
+        )
+        .route(
+            "/app/{app}/api/{*path}",
+            axum::routing::any(backends::proxy_api),
+        )
         .route("/app/{app}/", get(apps::serve_app_index))
         .route("/app/{app}/{*path}", get(apps::serve_app_file))
         .merge(protected)
@@ -193,16 +225,25 @@ async fn record_agent_events(state: AppState) {
                         warn!("failed to persist assistant message: {err:#}");
                     }
                 }
-                // The agent touched files — the app set may have changed.
+                // The agent touched files — apps and backends may have changed.
                 if used_file_tools {
                     let fresh = apps::scan_apps(&state.workspace_dir);
-                    let mut cache = state.apps_cache.lock().expect("apps cache poisoned");
-                    if *cache != fresh {
-                        *cache = fresh.clone();
-                        drop(cache);
-                        let _ = state
-                            .client_events
-                            .send(ServerEvent::AppsChanged { apps: fresh });
+                    // Always reconcile backends: a file edit inside an
+                    // existing backend changes no manifest but needs a restart.
+                    sync_backends(&state.backends, &fresh);
+                    let changed = {
+                        let mut cache = state.apps_cache.lock().expect("apps cache poisoned");
+                        if *cache == fresh {
+                            false
+                        } else {
+                            *cache = fresh;
+                            true
+                        }
+                    };
+                    if changed {
+                        let _ = state.client_events.send(ServerEvent::AppsChanged {
+                            apps: apps::enriched_apps(&state),
+                        });
                     }
                 }
                 ServerEvent::Done { conversation_id }
@@ -211,6 +252,15 @@ async fn record_agent_events(state: AppState) {
         // No connected clients is fine; the recorder already persisted.
         let _ = state.client_events.send(server_event);
     }
+}
+
+fn sync_backends(manager: &Arc<backends::BackendManager>, apps: &[apps::AppManifest]) {
+    let with_backend: Vec<String> = apps
+        .iter()
+        .filter(|app| app.has_backend)
+        .map(|app| app.id.clone())
+        .collect();
+    manager.sync(&with_backend);
 }
 
 fn conversation_id_of(event: &AgentEvent) -> Option<i64> {

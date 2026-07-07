@@ -9,6 +9,8 @@ description = "Self-hosted AI agent and personal software factory"
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 data-encoding = "2"
+hyper = "1"
+hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
 rand = "0.9"
 rusqlite = { version = "0.32", features = ["bundled"] }
 scrypt = "0.11"

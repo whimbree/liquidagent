@@ -49,8 +49,9 @@ pub enum ServerEvent {
         title: String,
     },
     /// The set of installed apps changed (agent created/edited/removed one).
+    /// Payload matches /api/apps: manifests enriched with backend status.
     AppsChanged {
-        apps: Vec<crate::apps::AppManifest>,
+        apps: Vec<serde_json::Value>,
     },
     /// The agent asked the shell to do something (e.g. open an app).
     ShellCommand {

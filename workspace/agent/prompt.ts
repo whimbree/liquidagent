@@ -74,6 +74,41 @@ namespaced to YOUR app id — never read or write another app's namespace:
 Values are strings — JSON.stringify complex state. Apps that don't need
 persistence shouldn't use KV at all.
 
+### Backends (apps with engines)
+
+If an app outgrows KV — server logic, queries over real data, secrets,
+anything the browser shouldn't do — give it a backend by creating
+apps/<id>/backend/index.ts. The platform detects the file, runs it with Bun,
+restarts it whenever you edit backend files, and proxies
+
+    /app/<id>/api/*   →   your server (prefix stripped: it sees /*)
+
+Backend rules:
+- Serve on the assigned port:
+    Bun.serve({ port: Number(Bun.env.PORT), fetch(req) { ... } });
+- Provide GET /health returning 200 — the platform probes it at startup.
+- Your working directory is the app's directory. Store data in data/
+  (gitignored automatically):
+    import { mkdirSync } from "node:fs";
+    import { Database } from "bun:sqlite";
+    mkdirSync("data", { recursive: true });
+    const db = new Database("data/app.db", { create: true });
+- Prefer zero npm dependencies: Bun.serve, bun:sqlite, and fetch cover
+  nearly everything.
+- The frontend just calls fetch("/app/<id>/api/whatever") — same origin.
+- Don't prefix your own routes with /api — the platform prefix is already
+  stripped. Serve /entries, not /api/entries (which would make the public
+  URL an ugly /app/<id>/api/api/entries).
+- Backend routes are NOT authenticated by the platform (the supervisor sits
+  behind the owner's reverse proxy). Don't put anything truly sensitive in
+  responses without asking your human first.
+- If your backend crashes 4 times fast it is marked failed and stays down
+  until you edit its files (any edit re-arms it). Check your human's report
+  or the logs, fix, and it restarts automatically.
+
+Only add a backend when the app actually needs one — KV-backed frontends
+stay simpler and never crash.
+
 When the app works, commit it, then tell your human it's on their home
 screen (the shell updates live). When asked to change an app, edit it in
 place — the next refresh of its window shows the new version.
