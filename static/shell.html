@@ -153,6 +153,8 @@
   .user { align-self:flex-end; background:#2b3a5c; white-space:pre-wrap; }
   .bot { align-self:flex-start; background:#1c1c24; }
   .errmsg { align-self:flex-start; background:#3a1c1c; color:#f0b0b0; }
+  .scheduled { align-self:center; color:var(--dim); font-size:0.8rem; font-style:italic;
+               background:transparent; white-space:pre-wrap; }
   .msg code { background:#0c0c10; padding:0.1em 0.35em; border-radius:5px; font-size:0.88em; }
   .msg pre { background:#0c0c10; padding:0.6rem 0.8rem; border-radius:8px; overflow-x:auto; }
   .msg pre code { background:transparent; padding:0; }
@@ -610,6 +612,7 @@ async function openConversation(id) {
   for (const m of data.messages) {
     if (m.role === "user") bubble("user", m.content);
     else if (m.role === "assistant") bubble("bot", m.content, true);
+    else if (m.role === "scheduled") bubble("scheduled", m.content);
     else bubble("errmsg", m.content);
   }
 }

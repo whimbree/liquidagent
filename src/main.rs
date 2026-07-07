@@ -5,6 +5,7 @@ mod auth;
 mod backends;
 mod config;
 mod db;
+mod scheduler;
 mod ws;
 
 use std::collections::HashMap;
@@ -47,6 +48,8 @@ const WORKSPACE_TEMPLATE: &[(&str, &str)] = &[
     ("MYHUMAN.md", include_str!("../default-workspace/MYHUMAN.md")),
     ("MEMORY.md", include_str!("../default-workspace/MEMORY.md")),
     (".gitignore", include_str!("../default-workspace/.gitignore")),
+    ("PULSE.json", include_str!("../default-workspace/PULSE.json")),
+    ("CRONS.json", include_str!("../default-workspace/CRONS.json")),
 ];
 
 // Phase 0 binds localhost only; your reverse proxy (with SSO) fronts it.
@@ -105,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     tokio::spawn(record_agent_events(state.clone()));
+    scheduler::start(state.clone());
 
     let protected = Router::new()
         .route("/api/conversations", get(api::list_conversations))

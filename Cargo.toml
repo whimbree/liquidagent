@@ -8,6 +8,8 @@ description = "Self-hosted AI agent and personal software factory"
 [dependencies]
 anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
+chrono = "0.4"
+croner = "2"
 data-encoding = "2"
 hyper = "1"
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
