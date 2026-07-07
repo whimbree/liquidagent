@@ -12,7 +12,7 @@
   }
   * { box-sizing:border-box; }
   body { margin:0; height:100dvh; overflow:hidden; background:var(--bg); color:#e6e6ea;
-         font:15px/1.5 system-ui,sans-serif; }
+         font:15px/1.5 system-ui,sans-serif; touch-action:manipulation; }
   button { font:inherit; border:0; border-radius:8px; cursor:pointer; color:white;
            background:var(--accent); padding:0.55rem 1rem; }
   button:disabled { opacity:0.5; cursor:default; }
@@ -106,13 +106,23 @@
              box-shadow:0 8px 24px rgba(0,0,0,0.5); display:flex; align-items:center;
              justify-content:center; }
   #chatfab.busy { animation:pulse 1.2s ease-in-out infinite; }
-  #chat { position:fixed; top:0; right:0; height:100%; width:min(26rem, 100vw); z-index:50;
-          background:#131319; border-left:1px solid var(--line); display:flex;
-          flex-direction:column; transform:translateX(105%); transition:transform 0.22s ease;
-          box-shadow:-8px 0 30px rgba(0,0,0,0.4); }
-  #chat.open { transform:none; }
+  body.chat-open #chatfab { display:none; } /* never fight the keyboard's enter key */
+  #chat { position:fixed; left:0; top:0; width:min(24rem, 100vw); height:min(68dvh, 44rem);
+          z-index:50; background:#131319; border:1px solid #30303c; border-radius:14px;
+          display:flex; flex-direction:column; overflow:hidden;
+          box-shadow:0 18px 50px rgba(0,0,0,0.55);
+          opacity:0; transform:scale(0.97); pointer-events:none;
+          transition:opacity 0.14s ease, transform 0.14s ease; }
+  #chat.open { opacity:1; transform:none; pointer-events:auto; }
   #chat header { display:flex; align-items:center; gap:0.4rem; padding:0.55rem 0.7rem;
-                 border-bottom:1px solid var(--line); }
+                 border-bottom:1px solid var(--line); cursor:grab; user-select:none;
+                 touch-action:none; }
+  #chat header:active { cursor:grabbing; }
+  @media (max-width:720px) {
+    #chat { left:0 !important; top:0 !important; width:100vw; height:100dvh;
+            border-radius:0; border:0; }
+    #chat header { cursor:default; }
+  }
   #chat header b { flex:1; font-size:0.95rem; overflow:hidden; text-overflow:ellipsis;
                    white-space:nowrap; }
   #chat header button { background:transparent; color:var(--dim); padding:0.2rem 0.45rem; }
@@ -166,8 +176,9 @@
   <div id="home">
     <h2>liquid</h2>
     <div id="grid"></div>
-    <p id="empty" hidden>No apps yet. Open the chat <b>💬</b> and ask liquid to build one —
-      <i>“build me a calculator”</i> is a fine place to start. It will appear here, live.</p>
+    <p id="empty" hidden>No apps yet. Double-tap anywhere (or tap <b>💬</b>) and ask liquid
+      to build one — <i>“build me a calculator”</i> is a fine place to start. It will appear
+      here, live.</p>
   </div>
 
   <div id="mobileapp">
@@ -519,12 +530,76 @@ function newConversation() {
 }
 $("newchat").onclick = newConversation;
 $("convtoggle").onclick = () => { renderConvList(); $("convlist").classList.toggle("open"); };
-$("chatclose").onclick = () => $("chat").classList.remove("open");
-$("chatfab").onclick = () => {
-  $("chat").classList.toggle("open");
-  if ($("chat").classList.contains("open")) $("input").focus();
-};
-addEventListener("keydown", (e) => { if (e.key === "Escape") { $("chat").classList.remove("open"); $("convlist").classList.remove("open"); } });
+
+/* ---- summonable chat: double-tap the desk and liquid appears there ---- */
+function summonChat(x, y) {
+  const chat = $("chat");
+  chat.classList.add("open");
+  document.body.classList.add("chat-open");
+  if (!isMobile()) {
+    if (typeof x === "number") {
+      const w = chat.offsetWidth, h = chat.offsetHeight;
+      const px = Math.max(8, Math.min(x - w / 2, innerWidth - w - 8));
+      const py = Math.max(8, Math.min(y - 20, innerHeight - h - 8));
+      chat.style.left = px + "px"; chat.style.top = py + "px";
+      layout.chat = { x: px, y: py };
+      scheduleLayoutSave();
+    } else if (layout.chat) {
+      chat.style.left = layout.chat.x + "px"; chat.style.top = layout.chat.y + "px";
+    } else { // default: bottom-right, where the bubble was
+      chat.style.left = Math.max(8, innerWidth - chat.offsetWidth - 16) + "px";
+      chat.style.top = Math.max(8, innerHeight - chat.offsetHeight - 16) + "px";
+    }
+  }
+  adjustChatForKeyboard();
+  $("input").focus();
+}
+function closeChat() {
+  $("chat").classList.remove("open");
+  document.body.classList.remove("chat-open");
+}
+$("chatclose").onclick = closeChat;
+$("chatfab").onclick = () => summonChat();
+$("home").addEventListener("dblclick", (e) => {
+  if (e.target.closest(".appicon")) return; // empty desk only
+  summonChat(e.clientX, e.clientY);
+});
+addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { closeChat(); $("convlist").classList.remove("open"); }
+});
+
+// drag the chat panel by its header (desktop)
+$("chat").querySelector("header").addEventListener("pointerdown", (e) => {
+  if (isMobile() || e.target.tagName === "BUTTON") return;
+  e.preventDefault();
+  const chat = $("chat");
+  const startX = e.clientX - chat.offsetLeft;
+  const startY = e.clientY - chat.offsetTop;
+  const move = (ev) => {
+    chat.style.left = Math.max(0, Math.min(ev.clientX - startX, innerWidth - 80)) + "px";
+    chat.style.top  = Math.max(0, Math.min(ev.clientY - startY, innerHeight - 60)) + "px";
+  };
+  const up = () => {
+    removeEventListener("pointermove", move);
+    removeEventListener("pointerup", up);
+    layout.chat = { x: chat.offsetLeft, y: chat.offsetTop };
+    scheduleLayoutSave();
+  };
+  addEventListener("pointermove", move);
+  addEventListener("pointerup", up);
+});
+
+// keep the composer above the on-screen keyboard (mobile)
+function adjustChatForKeyboard() {
+  const chat = $("chat");
+  if (!window.visualViewport || !isMobile() || !chat.classList.contains("open")) {
+    chat.style.height = ""; return;
+  }
+  chat.style.height = window.visualViewport.height + "px";
+}
+if (window.visualViewport) {
+  window.visualViewport.addEventListener("resize", adjustChatForKeyboard);
+}
 
 function connect() {
   const proto = location.protocol === "https:" ? "wss" : "ws";
