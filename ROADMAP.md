@@ -64,7 +64,7 @@ Chat streams, memory files inject, the agent commits its work, graceful
 shutdown, NixOS module. Demo: tell it your name, kill the harness, ask a
 fresh session who you are.
 
-### M1 — "Daily driver"
+### M1 — "Daily driver" ✅ (shipped)
 
 Make it something you actually live with, from your phone, before building
 the desktop on top.
@@ -82,7 +82,7 @@ the desktop on top.
 conversation is still there.
 **Risk:** low — all known patterns. **Est: 1–2 focused weekends.**
 
-### M2 — "The first app" ← *the calculator moment*
+### M2 — "The first app" ✅ (shipped) ← *the calculator moment*
 
 The app model, minimum shell, and the agent knowing how to build apps.
 
@@ -106,7 +106,7 @@ works tomorrow.
 **Risk:** medium — the shell is new UI surface; everything else is plumbing
 we've already proven. **Est: 2–3 focused weekends.**
 
-### M3 — "A place that's yours"
+### M3 — "A place that’s yours" 🔶 (core shipped: history popover, maximize, dock, agent open_app tool)
 
 The desk becomes a real environment, not a demo.
 
