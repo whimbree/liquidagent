@@ -34,11 +34,9 @@ function resolveClaudeBinary(): string {
 }
 const claudeBinary = resolveClaudeBinary();
 
-/** claudeSessionId for multi-turn context; lost on restart (Phase 0 accepts this). */
-let sessionId: string | undefined;
 let activeQuery: Query | null = null;
 
-async function startQuery(prompt: string): Promise<Query> {
+async function startQuery(prompt: string, resumeSessionId?: string): Promise<Query> {
   // Rebuilt every query so memory edits take effect immediately.
   const memoryAppend = await buildSystemPromptAppend(workspaceDir);
   return query({
@@ -51,7 +49,7 @@ async function startQuery(prompt: string): Promise<Query> {
       allowDangerouslySkipPermissions: true,
       maxTurns: MAX_TURNS_PER_QUERY,
       includePartialMessages: true,
-      ...(sessionId !== undefined ? { resume: sessionId } : {}),
+      ...(resumeSessionId !== undefined ? { resume: resumeSessionId } : {}),
     },
   });
 }
@@ -61,8 +59,8 @@ function toEvents(requestId: string, message: SDKMessage, sawFileTool: { value: 
   switch (message.type) {
     case "system":
       if (message.subtype === "init") {
-        sessionId = message.session_id;
         logToStderr(`session ${message.session_id} (model ${message.model})`);
+        return [{ type: "session", id: requestId, session_id: message.session_id }];
       }
       return [];
     case "stream_event": {
@@ -97,9 +95,9 @@ function toEvents(requestId: string, message: SDKMessage, sawFileTool: { value: 
   }
 }
 
-async function runQuery(requestId: string, prompt: string): Promise<void> {
+async function runQuery(requestId: string, prompt: string, sessionId?: string): Promise<void> {
   const sawFileTool = { value: false };
-  const q = await startQuery(prompt);
+  const q = await startQuery(prompt, sessionId);
   activeQuery = q;
   try {
     for await (const message of q) {
@@ -143,7 +141,7 @@ async function main(): Promise<void> {
     switch (request.type) {
       case "query":
         // Phase 0: one query at a time; requests queue in the supervisor channel.
-        await runQuery(request.id, request.prompt);
+        await runQuery(request.id, request.prompt, request.session_id);
         break;
       case "stop": {
         const q = activeQuery;

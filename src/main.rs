@@ -1,7 +1,11 @@
 mod agent;
+mod api;
+mod auth;
 mod config;
+mod db;
 mod ws;
 
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 
@@ -9,10 +13,13 @@ use anyhow::Context;
 use axum::response::Html;
 use axum::routing::get;
 use axum::{Json, Router};
+use tokio::sync::broadcast;
 use tracing::{info, warn};
 
-use crate::agent::Agent;
+use crate::agent::{Agent, AgentEvent};
 use crate::config::Config;
+use crate::db::Db;
+use crate::ws::ServerEvent;
 
 /// The chat page is embedded at compile time — no runtime path discovery.
 const CHAT_PAGE: &str = include_str!("../static/chat.html");
@@ -27,6 +34,15 @@ const WORKSPACE_TEMPLATE: &[(&str, &str)] = &[
 // Phase 0 binds localhost only; your reverse proxy (with SSO) fronts it.
 const BIND_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
+const CLIENT_EVENT_CAPACITY: usize = 1024;
+
+#[derive(Clone)]
+pub struct AppState {
+    pub db: Db,
+    pub agent: Agent,
+    pub client_events: broadcast::Sender<ServerEvent>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -39,7 +55,33 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env()?;
     init_workspace(&config.workspace_dir)?;
 
+    let db = Db::open(&config.data_dir.join("liquid.db"))?;
     let agent = Agent::start(&config);
+    let (client_events, _) = broadcast::channel(CLIENT_EVENT_CAPACITY);
+
+    let state = AppState {
+        db,
+        agent,
+        client_events,
+    };
+
+    tokio::spawn(record_agent_events(state.clone()));
+
+    let protected = Router::new()
+        .route("/api/conversations", get(api::list_conversations))
+        .route(
+            "/api/conversations/{id}",
+            axum::routing::delete(api::delete_conversation),
+        )
+        .route(
+            "/api/conversations/{id}/messages",
+            get(api::list_messages),
+        )
+        .route("/ws", get(ws::ws_handler))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            api::require_auth,
+        ));
 
     let app = Router::new()
         .route("/", get(|| async { Html(CHAT_PAGE) }))
@@ -47,8 +89,11 @@ async fn main() -> anyhow::Result<()> {
             "/api/health",
             get(|| async { Json(serde_json::json!({ "status": "ok" })) }),
         )
-        .route("/ws", get(ws::ws_handler))
-        .with_state(agent);
+        .route("/api/auth/status", get(api::auth_status))
+        .route("/api/auth/setup", axum::routing::post(api::auth_setup))
+        .route("/api/auth/login", axum::routing::post(api::auth_login))
+        .merge(protected)
+        .with_state(state);
 
     let addr = SocketAddr::new(BIND_ADDR, config.port);
     let listener = tokio::net::TcpListener::bind(addr)
@@ -61,6 +106,92 @@ async fn main() -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("server error")
+}
+
+/// Consumes the agent event stream: persists finished assistant turns and
+/// session ids, and fans events out to connected clients. Runs for the
+/// lifetime of the process so history is recorded even with no client
+/// connected (e.g. a query finishing after the phone locked).
+async fn record_agent_events(state: AppState) {
+    let mut events = state.agent.subscribe();
+    let mut buffers: HashMap<i64, String> = HashMap::new();
+
+    loop {
+        let event = match events.recv().await {
+            Ok(event) => event,
+            Err(broadcast::error::RecvError::Lagged(missed)) => {
+                warn!("recorder lagged, {missed} agent events lost");
+                continue;
+            }
+            Err(broadcast::error::RecvError::Closed) => return,
+        };
+
+        let conversation_id = match conversation_id_of(&event) {
+            Some(id) => id,
+            None => continue,
+        };
+
+        let server_event = match event {
+            AgentEvent::Token { text, .. } => {
+                buffers.entry(conversation_id).or_default().push_str(&text);
+                ServerEvent::Token {
+                    conversation_id,
+                    text,
+                }
+            }
+            AgentEvent::Tool { name, status, .. } => ServerEvent::Tool {
+                conversation_id,
+                name,
+                status,
+            },
+            AgentEvent::Session { session_id, .. } => {
+                if let Err(err) = state
+                    .db
+                    .set_conversation_session(conversation_id, &session_id)
+                {
+                    warn!("failed to persist session id: {err:#}");
+                }
+                continue;
+            }
+            AgentEvent::Error { message, .. } => {
+                if let Err(err) = state.db.append_message(conversation_id, "error", &message) {
+                    warn!("failed to persist error message: {err:#}");
+                }
+                ServerEvent::Error {
+                    conversation_id,
+                    message,
+                }
+            }
+            AgentEvent::Done { .. } => {
+                let content = buffers.remove(&conversation_id).unwrap_or_default();
+                if !content.is_empty() {
+                    if let Err(err) = state.db.append_message(conversation_id, "assistant", &content) {
+                        warn!("failed to persist assistant message: {err:#}");
+                    }
+                }
+                ServerEvent::Done { conversation_id }
+            }
+        };
+        // No connected clients is fine; the recorder already persisted.
+        let _ = state.client_events.send(server_event);
+    }
+}
+
+fn conversation_id_of(event: &AgentEvent) -> Option<i64> {
+    let id = match event {
+        AgentEvent::Token { id, .. }
+        | AgentEvent::Tool { id, .. }
+        | AgentEvent::Done { id, .. }
+        | AgentEvent::Error { id, .. }
+        | AgentEvent::Session { id, .. } => id,
+    };
+    match id.parse() {
+        Ok(id) => Some(id),
+        Err(_) => {
+            warn!("agent event with non-numeric id: {id}");
+            None
+        }
+    }
 }
 
 /// Resolves on SIGINT or SIGTERM. The agent child has kill_on_drop, so

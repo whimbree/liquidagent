@@ -4,6 +4,7 @@ use anyhow::Context;
 
 pub const DEFAULT_PORT: u16 = 3000;
 const DEFAULT_WORKSPACE_DIR: &str = "dev-workspace";
+const DEFAULT_DATA_DIR: &str = "dev-data";
 const DEFAULT_AGENT_CMD: &str = "bun run workspace/agent/harness.ts";
 const FAKE_AGENT_CMD: &str = "bun run workspace/agent/fake-harness.ts";
 
@@ -12,6 +13,8 @@ pub struct Config {
     pub port: u16,
     /// The directory the agent is allowed to modify. Created + `git init`ed on boot.
     pub workspace_dir: PathBuf,
+    /// Platform state: SQLite database. NOT agent-writable.
+    pub data_dir: PathBuf,
     /// Command used to spawn the agent harness child process.
     pub agent_command: Vec<String>,
 }
@@ -29,6 +32,10 @@ impl Config {
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(DEFAULT_WORKSPACE_DIR));
 
+        let data_dir = std::env::var("LIQUID_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(DEFAULT_DATA_DIR));
+
         let raw_command = match std::env::var("LIQUID_AGENT_CMD") {
             Ok(custom) => custom,
             Err(_) if std::env::var("LIQUID_FAKE_AGENT").is_ok() => FAKE_AGENT_CMD.to_string(),
@@ -40,6 +47,7 @@ impl Config {
         Ok(Self {
             port,
             workspace_dir,
+            data_dir,
             agent_command,
         })
     }

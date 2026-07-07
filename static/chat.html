@@ -2,111 +2,307 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>liquid</title>
 <style>
-  :root { color-scheme: dark; }
+  :root { color-scheme: dark; --bg:#101014; --panel:#17171d; --line:#26262e; --dim:#7a7a88; --accent:#3d5296; }
   * { box-sizing: border-box; }
-  body {
-    margin: 0; height: 100dvh; display: flex; flex-direction: column;
-    background: #101014; color: #e6e6ea;
-    font: 15px/1.5 system-ui, sans-serif;
+  body { margin:0; height:100dvh; background:var(--bg); color:#e6e6ea; font:15px/1.5 system-ui,sans-serif; }
+  button { font:inherit; border:0; border-radius:8px; cursor:pointer; color:white; background:var(--accent); padding:0.55rem 1rem; }
+  button:disabled { opacity:0.5; cursor:default; }
+  input { font:inherit; color:inherit; background:var(--panel); border:1px solid #33333e; border-radius:8px; padding:0.6rem 0.8rem; outline:none; }
+  input:focus { border-color:#4a5a8c; }
+
+  /* ---- login ---- */
+  #login { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:0.9rem; }
+  #login h1 { font-size:1.6rem; margin:0; letter-spacing:0.03em; }
+  #login p { color:var(--dim); margin:0; }
+  #login form { display:flex; flex-direction:column; gap:0.6rem; width:min(20rem, 85vw); }
+  #login .err { color:#f0a0a0; min-height:1.2em; font-size:0.85rem; }
+
+  /* ---- app layout ---- */
+  #app { display:none; height:100%; }
+  #app.active { display:flex; }
+  #side {
+    width: 15.5rem; border-right:1px solid var(--line); display:flex; flex-direction:column;
+    background:#121218; flex-shrink:0; transition: margin-left 0.2s ease;
   }
-  header {
-    padding: 0.6rem 1rem; border-bottom: 1px solid #26262e;
-    font-weight: 600; letter-spacing: 0.02em; display: flex; gap: 0.5rem; align-items: baseline;
+  #side header { padding:0.7rem 0.9rem; display:flex; align-items:center; gap:0.5rem; border-bottom:1px solid var(--line); }
+  #side header b { letter-spacing:0.02em; }
+  #side header small { color:var(--dim); }
+  #newchat { margin:0.7rem 0.9rem; padding:0.45rem; }
+  #convs { flex:1; overflow-y:auto; padding:0 0.45rem 0.7rem; display:flex; flex-direction:column; gap:2px; }
+  .conv { padding:0.45rem 0.55rem; border-radius:7px; cursor:pointer; white-space:nowrap; overflow:hidden;
+          text-overflow:ellipsis; color:#c9c9d4; font-size:0.9rem; display:flex; gap:0.4rem; }
+  .conv:hover { background:#1d1d26; }
+  .conv.active { background:#232335; color:white; }
+  .conv .del { margin-left:auto; color:var(--dim); visibility:hidden; }
+  .conv:hover .del { visibility:visible; }
+
+  #maincol { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #topbar { display:none; padding:0.55rem 0.9rem; border-bottom:1px solid var(--line); align-items:center; gap:0.7rem; }
+  #topbar b { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #burger { background:transparent; padding:0.2rem 0.4rem; font-size:1.2rem; }
+
+  #log { flex:1; overflow-y:auto; padding:1rem; display:flex; flex-direction:column; gap:0.75rem; }
+  .msg { max-width:46rem; padding:0.55rem 0.8rem; border-radius:10px; overflow-wrap:break-word; }
+  .msg p { margin:0.35em 0; } .msg p:first-child { margin-top:0; } .msg p:last-child { margin-bottom:0; }
+  .user { align-self:flex-end; background:#2b3a5c; white-space:pre-wrap; }
+  .bot { align-self:flex-start; background:#1c1c24; }
+  .tool { align-self:flex-start; color:#8a8a99; font-size:0.8rem; padding:0 0.8rem; }
+  .error { align-self:flex-start; background:#3a1c1c; color:#f0b0b0; }
+  .msg code { background:#0c0c10; padding:0.1em 0.35em; border-radius:5px; font-size:0.88em; }
+  .msg pre { background:#0c0c10; padding:0.6rem 0.8rem; border-radius:8px; overflow-x:auto; }
+  .msg pre code { background:transparent; padding:0; }
+  .msg a { color:#8fa8e8; }
+
+  #composer { display:flex; gap:0.5rem; padding:0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom)); border-top:1px solid var(--line); }
+  #composer input { flex:1; }
+  #status { font-size:0.75rem; color:var(--dim); padding:0 1rem 0.4rem; }
+
+  /* ---- mobile ---- */
+  @media (max-width: 720px) {
+    #side { position:fixed; z-index:20; height:100%; margin-left:-16rem; box-shadow:2px 0 18px rgba(0,0,0,0.5); }
+    #side.open { margin-left:0; }
+    #topbar { display:flex; }
+    #backdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:10; }
+    #backdrop.open { display:block; }
   }
-  header small { color: #7a7a88; font-weight: 400; }
-  #status { margin-left: auto; font-size: 0.8rem; color: #7a7a88; }
-  #log { flex: 1; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; }
-  .msg { max-width: 46rem; padding: 0.55rem 0.8rem; border-radius: 10px; white-space: pre-wrap; word-wrap: break-word; }
-  .user { align-self: flex-end; background: #2b3a5c; }
-  .bot { align-self: flex-start; background: #1c1c24; }
-  .tool { align-self: flex-start; color: #8a8a99; font-size: 0.8rem; padding: 0 0.8rem; }
-  .error { align-self: flex-start; background: #3a1c1c; color: #f0b0b0; }
-  form { display: flex; gap: 0.5rem; padding: 0.75rem 1rem; border-top: 1px solid #26262e; }
-  input {
-    flex: 1; padding: 0.6rem 0.8rem; border-radius: 8px; border: 1px solid #33333e;
-    background: #17171d; color: inherit; font: inherit; outline: none;
-  }
-  input:focus { border-color: #4a5a8c; }
-  button {
-    padding: 0.6rem 1.1rem; border-radius: 8px; border: 0; background: #3d5296;
-    color: white; font: inherit; cursor: pointer;
-  }
-  button:disabled { opacity: 0.5; cursor: default; }
 </style>
 </head>
 <body>
-<header>liquid <small>phase 0 walking skeleton</small><span id="status">connecting…</span></header>
-<div id="log"></div>
-<form id="form">
-  <input id="input" placeholder="Talk to your agent…" autocomplete="off" autofocus>
-  <button id="send" type="submit" disabled>Send</button>
-</form>
+
+<div id="login">
+  <h1>liquid</h1>
+  <p id="login-hint"></p>
+  <form id="login-form">
+    <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+    <button type="submit">Enter</button>
+    <div class="err" id="login-err"></div>
+  </form>
+</div>
+
+<div id="app">
+  <div id="backdrop"></div>
+  <nav id="side">
+    <header><b>liquid</b><small id="connstate">connecting…</small></header>
+    <button id="newchat">+ New conversation</button>
+    <div id="convs"></div>
+  </nav>
+  <div id="maincol">
+    <div id="topbar"><button id="burger">☰</button><b id="title">liquid</b></div>
+    <div id="log"></div>
+    <div id="status"></div>
+    <form id="composer">
+      <input id="input" placeholder="Talk to your agent…" autocomplete="off">
+      <button id="send" type="submit" disabled>Send</button>
+    </form>
+  </div>
+</div>
+
 <script>
-  const log = document.getElementById("log");
-  const form = document.getElementById("form");
-  const input = document.getElementById("input");
-  const send = document.getElementById("send");
-  const status = document.getElementById("status");
+"use strict";
+const $ = (id) => document.getElementById(id);
+const RECONNECT_DELAY_MS = 1500;
 
-  let currentBot = null;
-  const RECONNECT_DELAY_MS = 1500;
-
-  function bubble(cls, text) {
-    const el = document.createElement("div");
-    el.className = "msg " + cls;
-    el.textContent = text;
-    log.appendChild(el);
-    log.scrollTop = log.scrollHeight;
-    return el;
+// ---- tiny markdown (code blocks, inline code, bold, links) ----
+function escapeHtml(s) {
+  return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+function renderMarkdown(src) {
+  const parts = src.split(/```/);
+  let html = "";
+  for (let i = 0; i < parts.length; i++) {
+    if (i % 2 === 1) { // inside a fence; first line may be a language tag
+      const body = parts[i].replace(/^[a-zA-Z0-9_-]*\n/, "");
+      html += `<pre><code>${escapeHtml(body)}</code></pre>`;
+      continue;
+    }
+    let text = escapeHtml(parts[i]);
+    text = text.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    text = text.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>");
+    text = text.replace(/\bhttps?:\/\/[^\s<]+/g, (u) => `<a href="${u}" target="_blank" rel="noopener">${u}</a>`);
+    html += text.split(/\n{2,}/).map(p => `<p>${p.replace(/\n/g,"<br>")}</p>`).join("");
   }
+  return html;
+}
 
-  function connect() {
-    const proto = location.protocol === "https:" ? "wss" : "ws";
-    const ws = new WebSocket(`${proto}://${location.host}/ws`);
+// ---- auth ----
+let token = localStorage.getItem("liquid_token");
+async function api(path, options = {}) {
+  const headers = Object.assign({ "Content-Type": "application/json" }, options.headers);
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const response = await fetch(path, Object.assign({}, options, { headers }));
+  if (response.status === 401) { showLogin(false); throw new Error("unauthorized"); }
+  return response;
+}
 
-    ws.onopen = () => { status.textContent = "connected"; send.disabled = false; };
-    ws.onclose = () => {
-      status.textContent = "disconnected — retrying…";
-      send.disabled = true;
-      setTimeout(connect, RECONNECT_DELAY_MS);
-    };
-    ws.onmessage = (raw) => {
-      let ev;
-      try { ev = JSON.parse(raw.data); } catch { return; }
-      switch (ev.type) {
-        case "token":
-          if (!currentBot) currentBot = bubble("bot", "");
-          currentBot.textContent += ev.text;
-          log.scrollTop = log.scrollHeight;
-          break;
-        case "tool":
-          bubble("tool", `⚙ ${ev.name} (${ev.status})`);
-          break;
-        case "done":
-          currentBot = null;
-          break;
-        case "error":
-          bubble("error", ev.message);
-          currentBot = null;
-          break;
-      }
-    };
-
-    form.onsubmit = (e) => {
-      e.preventDefault();
-      const content = input.value.trim();
-      if (!content || ws.readyState !== WebSocket.OPEN) return;
-      bubble("user", content);
-      currentBot = null;
-      ws.send(JSON.stringify({ type: "user_message", content }));
-      input.value = "";
-    };
+let passwordIsSet = true;
+async function boot() {
+  const status = await (await fetch("/api/auth/status")).json();
+  passwordIsSet = status.password_set;
+  if (token && passwordIsSet) {
+    const probe = await fetch("/api/conversations", { headers: { Authorization: `Bearer ${token}` } });
+    if (probe.ok) { enterApp(await probe.json()); return; }
+    token = null; localStorage.removeItem("liquid_token");
   }
+  showLogin(!passwordIsSet);
+}
 
+function showLogin(isSetup) {
+  $("app").classList.remove("active");
+  $("login").style.display = "flex";
+  $("login-hint").textContent = isSetup
+    ? "First boot — choose a password (8+ characters)."
+    : "Welcome back.";
+  $("password").autocomplete = isSetup ? "new-password" : "current-password";
+}
+
+$("login-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const password = $("password").value;
+  const path = passwordIsSet ? "/api/auth/login" : "/api/auth/setup";
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+  const body = await response.json();
+  if (!response.ok) { $("login-err").textContent = body.error ?? "failed"; return; }
+  token = body.token;
+  localStorage.setItem("liquid_token", token);
+  const list = await (await api("/api/conversations")).json();
+  enterApp(list);
+};
+
+// ---- app state ----
+let conversations = [];
+let activeConversation = null;   // id or null (new chat)
+let currentBot = null;
+let ws = null;
+
+function enterApp(list) {
+  conversations = list.conversations;
+  $("login").style.display = "none";
+  $("app").classList.add("active");
+  renderConversations();
+  if (conversations.length > 0) openConversation(conversations[0].id);
   connect();
+  $("input").focus();
+}
+
+function renderConversations() {
+  const box = $("convs");
+  box.innerHTML = "";
+  for (const conv of conversations) {
+    const el = document.createElement("div");
+    el.className = "conv" + (conv.id === activeConversation ? " active" : "");
+    const label = document.createElement("span");
+    label.textContent = conv.title || "Untitled";
+    label.style.cssText = "overflow:hidden;text-overflow:ellipsis";
+    const del = document.createElement("span");
+    del.className = "del"; del.textContent = "✕";
+    del.onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Delete "${conv.title}"?`)) return;
+      await api(`/api/conversations/${conv.id}`, { method: "DELETE" });
+      conversations = conversations.filter(c => c.id !== conv.id);
+      if (activeConversation === conv.id) newConversation();
+      renderConversations();
+    };
+    el.append(label, del);
+    el.onclick = () => { openConversation(conv.id); closeDrawer(); };
+    box.appendChild(el);
+  }
+}
+
+function bubble(cls, text, asMarkdown = false) {
+  const el = document.createElement("div");
+  el.className = "msg " + cls;
+  if (asMarkdown) el.innerHTML = renderMarkdown(text); else el.textContent = text;
+  $("log").appendChild(el);
+  $("log").scrollTop = $("log").scrollHeight;
+  return el;
+}
+
+async function openConversation(id) {
+  activeConversation = id;
+  currentBot = null;
+  renderConversations();
+  const conv = conversations.find(c => c.id === id);
+  $("title").textContent = conv ? conv.title : "liquid";
+  $("log").innerHTML = "";
+  const data = await (await api(`/api/conversations/${id}/messages`)).json();
+  for (const message of data.messages) {
+    if (message.role === "user") bubble("user", message.content);
+    else if (message.role === "assistant") bubble("bot", message.content, true);
+    else bubble("error", message.content);
+  }
+}
+
+function newConversation() {
+  activeConversation = null;
+  currentBot = null;
+  $("log").innerHTML = "";
+  $("title").textContent = "New conversation";
+  renderConversations();
+  closeDrawer();
+  $("input").focus();
+}
+$("newchat").onclick = newConversation;
+
+// ---- websocket ----
+function connect() {
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  ws = new WebSocket(`${proto}://${location.host}/ws?token=${encodeURIComponent(token)}`);
+  ws.onopen = () => { $("connstate").textContent = "online"; $("send").disabled = false; };
+  ws.onclose = () => {
+    $("connstate").textContent = "reconnecting…"; $("send").disabled = true;
+    setTimeout(connect, RECONNECT_DELAY_MS);
+  };
+  ws.onmessage = (raw) => {
+    let ev; try { ev = JSON.parse(raw.data); } catch { return; }
+    if (ev.type === "conversation_created") {
+      conversations.unshift({ id: ev.conversation_id, title: ev.title });
+      if (activeConversation === null) {
+        activeConversation = ev.conversation_id;
+        $("title").textContent = ev.title;
+      }
+      renderConversations();
+      return;
+    }
+    if (ev.conversation_id !== activeConversation) return; // background convo
+    switch (ev.type) {
+      case "token": {
+        if (!currentBot) { currentBot = bubble("bot", ""); currentBot.dataset.raw = ""; }
+        currentBot.dataset.raw += ev.text;
+        currentBot.innerHTML = renderMarkdown(currentBot.dataset.raw);
+        $("log").scrollTop = $("log").scrollHeight;
+        break;
+      }
+      case "tool": $("status").textContent = `⚙ ${ev.name}…`; break;
+      case "done": currentBot = null; $("status").textContent = ""; break;
+      case "error": bubble("error", ev.message); currentBot = null; $("status").textContent = ""; break;
+    }
+  };
+}
+
+$("composer").onsubmit = (e) => {
+  e.preventDefault();
+  const content = $("input").value.trim();
+  if (!content || !ws || ws.readyState !== WebSocket.OPEN) return;
+  bubble("user", content);
+  currentBot = null;
+  ws.send(JSON.stringify({ type: "user_message", content, conversation_id: activeConversation }));
+  $("input").value = "";
+};
+
+// ---- mobile drawer ----
+function closeDrawer() { $("side").classList.remove("open"); $("backdrop").classList.remove("open"); }
+$("burger").onclick = () => { $("side").classList.add("open"); $("backdrop").classList.add("open"); };
+$("backdrop").onclick = closeDrawer;
+
+boot();
 </script>
 </body>
 </html>

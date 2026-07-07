@@ -7,7 +7,12 @@ import { z } from "zod";
  */
 
 export const AgentRequestSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("query"), id: z.string(), prompt: z.string() }),
+  z.object({
+    type: z.literal("query"),
+    id: z.string(),
+    prompt: z.string(),
+    session_id: z.string().optional(),
+  }),
   z.object({ type: z.literal("stop"), id: z.string() }),
 ]);
 
@@ -17,7 +22,8 @@ export type AgentEvent =
   | { type: "token"; id: string; text: string }
   | { type: "tool"; id: string; name: string; status: "start" | "done" }
   | { type: "done"; id: string; used_file_tools: boolean }
-  | { type: "error"; id: string; message: string };
+  | { type: "error"; id: string; message: string }
+  | { type: "session"; id: string; session_id: string };
 
 /** stdout is the IPC channel — events only. Human-readable logging goes to stderr. */
 export function emit(event: AgentEvent): void {

@@ -14,11 +14,20 @@ const EVENT_CHANNEL_CAPACITY: usize = 1024;
 const REQUEST_CHANNEL_CAPACITY: usize = 64;
 
 /// Requests sent to the agent harness over stdin (one JSON object per line).
+/// `id` is the conversation id; `session_id` resumes that conversation's
+/// Claude session when present.
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentRequest {
-    Query { id: String, prompt: String },
-    Stop { id: String },
+    Query {
+        id: String,
+        prompt: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
+    Stop {
+        id: String,
+    },
 }
 
 /// Events received from the agent harness over stdout (one JSON object per line).
@@ -41,6 +50,12 @@ pub enum AgentEvent {
     Error {
         id: String,
         message: String,
+    },
+    /// The harness reports the Claude session backing this conversation so
+    /// the supervisor can persist it for resume.
+    Session {
+        id: String,
+        session_id: String,
     },
 }
 

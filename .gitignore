@@ -17,3 +17,4 @@ result-*
 # Build outputs
 dist/
 dist-chat/
+dev-data/

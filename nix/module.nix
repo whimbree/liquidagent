@@ -86,6 +86,7 @@ in
         HOME = cfg.dataDir;
         LIQUID_PORT = toString cfg.port;
         LIQUID_WORKSPACE_DIR = "${cfg.dataDir}/workspace";
+        LIQUID_DATA_DIR = "${cfg.dataDir}/data";
         LIQUID_AGENT_CMD =
           "${pkgs.bun}/bin/bun run ${packages.liquid-agent}/share/liquid-agent/harness.ts";
         LIQUID_CLAUDE_BIN = "${cfg.claudePackage}/bin/claude";

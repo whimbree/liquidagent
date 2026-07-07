@@ -74,6 +74,7 @@ The three riskiest integrations, each runnable on its own — see
 |---|---|---|
 | `LIQUID_PORT` | `3000` | HTTP/WS listen port (binds localhost only) |
 | `LIQUID_WORKSPACE_DIR` | `./dev-workspace` | Agent-modifiable workspace |
+| `LIQUID_DATA_DIR` | `./dev-data` | Platform state (SQLite) — not agent-writable |
 | `LIQUID_AGENT_CMD` | `bun run workspace/agent/harness.ts` | Harness spawn command |
 | `LIQUID_FAKE_AGENT` | unset | Set to use the offline fake harness |
 

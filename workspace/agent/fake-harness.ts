@@ -25,6 +25,7 @@ for await (const request of readRequests()) {
     continue;
   }
   const words = fakeResponse(request.prompt).split(" ");
+  emit({ type: "session", id: request.id, session_id: `fake-session-${request.id}` });
   emit({ type: "tool", id: request.id, name: "FakeTool", status: "start" });
   await Bun.sleep(TOKEN_DELAY_MS * 4);
   emit({ type: "tool", id: request.id, name: "FakeTool", status: "done" });
