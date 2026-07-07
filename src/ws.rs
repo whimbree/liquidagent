@@ -148,6 +148,7 @@ async fn handle_client_message(state: &AppState, message: ClientMessage) -> anyh
                     id: conversation_id.to_string(),
                     prompt: content,
                     session_id,
+                    model: crate::api::agent_model(&state.db),
                 })
                 .await?;
         }

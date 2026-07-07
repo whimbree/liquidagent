@@ -28,6 +28,10 @@ pub enum AgentRequest {
         prompt: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
+        /// Model alias for this query (opus/sonnet/haiku). Absent = the CLI
+        /// default. Read live from settings so a change takes effect next query.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
     },
     Stop {
         id: String,

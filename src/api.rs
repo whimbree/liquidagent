@@ -7,7 +7,24 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::auth;
+use crate::db::Db;
 use crate::AppState;
+
+/// The model aliases the Control Panel offers. "default" (and unset) means:
+/// pass nothing to the harness and let the Claude CLI / plan choose. Aliases
+/// are plan-aware and version-stable, which is why we store them rather than
+/// pinned model IDs.
+pub const AGENT_MODEL_KEY: &str = "agent_model";
+pub const AGENT_MODELS: [&str; 4] = ["default", "opus", "sonnet", "haiku"];
+
+/// The model alias to attach to a harness query, or None to let the CLI default
+/// stand. Read live so a Control-Panel change takes effect on the next query.
+pub fn agent_model(db: &Db) -> Option<String> {
+    match db.get_setting(AGENT_MODEL_KEY).ok().flatten() {
+        Some(m) if m != "default" && AGENT_MODELS.contains(&m.as_str()) => Some(m),
+        _ => None,
+    }
+}
 
 type ApiResult<T> = Result<T, ApiError>;
 
@@ -198,4 +215,51 @@ pub async fn pipeline_approve(State(state): State<AppState>) -> ApiResult<Status
         status: state.deploy.status(),
     });
     Ok(StatusCode::NO_CONTENT)
+}
+
+// --- settings endpoints -----------------------------------------------------------
+
+pub async fn get_settings(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    let model = state
+        .db
+        .get_setting(AGENT_MODEL_KEY)?
+        .unwrap_or_else(|| "default".to_string());
+    Ok(Json(json!({ "model": model, "models": AGENT_MODELS })))
+}
+
+#[derive(Deserialize)]
+pub struct SettingsBody {
+    model: Option<String>,
+}
+
+pub async fn put_settings(
+    State(state): State<AppState>,
+    Json(body): Json<SettingsBody>,
+) -> ApiResult<Response> {
+    if let Some(model) = body.model {
+        if !AGENT_MODELS.contains(&model.as_str()) {
+            return Ok(
+                (StatusCode::BAD_REQUEST, Json(json!({ "error": "unknown model" }))).into_response(),
+            );
+        }
+        state.db.set_setting(AGENT_MODEL_KEY, &model)?;
+    }
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_model_only_passes_known_non_default_aliases() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(agent_model(&db), None); // unset → let the CLI decide
+        db.set_setting(AGENT_MODEL_KEY, "default").unwrap();
+        assert_eq!(agent_model(&db), None); // "default" is an explicit no-op
+        db.set_setting(AGENT_MODEL_KEY, "opus").unwrap();
+        assert_eq!(agent_model(&db), Some("opus".to_string()));
+        db.set_setting(AGENT_MODEL_KEY, "gpt-4").unwrap();
+        assert_eq!(agent_model(&db), None); // outside the allowlist
+    }
 }

@@ -102,6 +102,15 @@ try {
   check("the new password logs in", (await j("/api/auth/login", { method: "POST", body: JSON.stringify({ password: NEWPASS }) })).status === 200);
   token = changed.body.token as string; // re-issued token carries the rest of the suite
 
+  // --- settings: model picker ---
+  console.log("settings");
+  check("default model is 'default'", (await j("/api/settings", {}, token)).body?.model === "default");
+  check("unknown model is rejected (400)",
+    (await j("/api/settings", { method: "PUT", body: JSON.stringify({ model: "gpt-4" }) }, token)).status === 400);
+  check("a valid model persists",
+    (await j("/api/settings", { method: "PUT", body: JSON.stringify({ model: "opus" }) }, token)).status === 204
+    && (await j("/api/settings", {}, token)).body?.model === "opus");
+
   // --- apps + KV + traversal ---
   console.log("apps + storage");
   check("kv put/get", (await j("/api/kv/x/k", { method: "PUT", body: JSON.stringify({ value: "v" }) }, token)).status === 204

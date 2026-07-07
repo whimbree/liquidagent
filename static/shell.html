@@ -228,7 +228,9 @@
                         text-transform:uppercase; color:var(--dim); font-weight:600; }
   .setting-section p.hint { margin:0 0 0.7rem; color:var(--dim); font-size:0.82rem; line-height:1.5; }
   .setting-section form { display:flex; flex-direction:column; gap:0.5rem; }
-  .setting-section input { width:100%; box-sizing:border-box; }
+  .setting-section input, .setting-section select { width:100%; box-sizing:border-box; }
+  .setting-section select { font:inherit; color:inherit; background:var(--panel);
+                            border:1px solid #33333e; border-radius:8px; padding:0.5rem; }
   .setting-section .msg { font-size:0.82rem; min-height:1.1em; }
   .setting-section .msg.ok { color:#8fd0a0; }
   .setting-section .msg.err { color:#f0a0a0; }
@@ -297,6 +299,17 @@
   <div id="panelbg">
     <div id="panel">
       <header><b>Settings</b><button id="panelclose" title="Close">✕</button></header>
+      <div class="setting-section">
+        <h3>Agent</h3>
+        <p class="hint">Which model liquid uses to build and reason. “Default” follows your Claude plan; the change applies to your next message.</p>
+        <select id="model-select">
+          <option value="default">Default (your plan’s choice)</option>
+          <option value="opus">Opus — most capable</option>
+          <option value="sonnet">Sonnet — balanced</option>
+          <option value="haiku">Haiku — fastest</option>
+        </select>
+        <div class="msg" id="model-msg"></div>
+      </div>
       <div class="setting-section">
         <h3>Account</h3>
         <p class="hint">Change your password. This signs out every other device.</p>
@@ -1027,12 +1040,28 @@ $("composer").onsubmit = (e) => {
 };
 
 /* ---------- settings / control panel ---------- */
+async function loadSettings() {
+  const m = $("model-msg"); m.textContent = ""; m.className = "msg";
+  try {
+    const s = await (await api("/api/settings")).json();
+    $("model-select").value = s.model || "default";
+  } catch {}
+}
+$("model-select").onchange = async () => {
+  const m = $("model-msg"); m.className = "msg"; m.textContent = "Saving…";
+  try {
+    const r = await api("/api/settings", { method:"PUT", body: JSON.stringify({ model: $("model-select").value }) });
+    if (r.ok) { m.className = "msg ok"; m.textContent = "Saved."; }
+    else { m.className = "msg err"; m.textContent = "Could not save."; }
+  } catch { m.className = "msg err"; m.textContent = "Could not save."; }
+};
 function closeSettings() {
   $("panelbg").classList.remove("open");
   $("pw-form").reset();
   const m = $("pw-msg"); m.textContent = ""; m.className = "msg";
+  const mm = $("model-msg"); mm.textContent = ""; mm.className = "msg";
 }
-$("settingsbtn").onclick = () => $("panelbg").classList.add("open");
+$("settingsbtn").onclick = () => { $("panelbg").classList.add("open"); loadSettings(); };
 $("panelclose").onclick = closeSettings;
 $("panelbg").onclick = (e) => { if (e.target === $("panelbg")) closeSettings(); };
 $("pw-form").onsubmit = async (e) => {

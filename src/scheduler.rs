@@ -180,6 +180,7 @@ async fn fire(state: &AppState, prompt: &str) {
         id: conversation_id.to_string(),
         prompt: prompt.to_string(),
         session_id,
+        model: crate::api::agent_model(&state.db),
     };
     if let Err(err) = state.agent.send(request).await {
         warn!("could not queue scheduled query: {err:#}");

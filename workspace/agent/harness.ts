@@ -80,7 +80,7 @@ const shellServer = createSdkMcpServer({
   ],
 });
 
-async function startQuery(prompt: string, resumeSessionId?: string): Promise<Query> {
+async function startQuery(prompt: string, resumeSessionId?: string, model?: string): Promise<Query> {
   // Rebuilt every query so memory edits take effect immediately.
   const memoryAppend = await buildSystemPromptAppend(workspaceDir);
   return query({
@@ -95,6 +95,7 @@ async function startQuery(prompt: string, resumeSessionId?: string): Promise<Que
       includePartialMessages: true,
       mcpServers: { "liquid-shell": shellServer },
       ...(resumeSessionId !== undefined ? { resume: resumeSessionId } : {}),
+      ...(model !== undefined ? { model } : {}),
     },
   });
 }
@@ -140,10 +141,10 @@ function toEvents(requestId: string, message: SDKMessage, sawFileTool: { value: 
   }
 }
 
-async function runQuery(requestId: string, prompt: string, sessionId?: string): Promise<void> {
+async function runQuery(requestId: string, prompt: string, sessionId?: string, model?: string): Promise<void> {
   const sawFileTool = { value: false };
   currentQueryId = requestId;
-  const q = await startQuery(prompt, sessionId);
+  const q = await startQuery(prompt, sessionId, model);
   activeQuery = q;
   try {
     for await (const message of q) {
@@ -187,7 +188,7 @@ async function main(): Promise<void> {
     switch (request.type) {
       case "query":
         // Phase 0: one query at a time; requests queue in the supervisor channel.
-        await runQuery(request.id, request.prompt, request.session_id);
+        await runQuery(request.id, request.prompt, request.session_id, request.model);
         break;
       case "stop": {
         const q = activeQuery;

@@ -12,6 +12,7 @@ export const AgentRequestSchema = z.discriminatedUnion("type", [
     id: z.string(),
     prompt: z.string(),
     session_id: z.string().optional(),
+    model: z.string().optional(),
   }),
   z.object({ type: z.literal("stop"), id: z.string() }),
 ]);
