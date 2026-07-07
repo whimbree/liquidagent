@@ -518,6 +518,18 @@ function showAppMenu(app, x, y) {
       const lines = data.commits.slice(0, 8).map(c => `${c.hash} ${c.subject}`).join("\n");
       toast(lines || "No history yet");
     }],
+    ["Publish as its own repo…", async () => {
+      const remote = prompt(`Publish ${app.name} to a git remote (its history is carved out and pushed as main):`);
+      if (!remote) return;
+      toast("Publishing…");
+      try {
+        const res = await api(`/api/apps/${encodeURIComponent(app.id)}/graduate`, {
+          method: "POST", body: JSON.stringify({ remote }),
+        });
+        if (res.ok) { const b = await res.json(); toast(`Published to ${b.remote} (${b.ref})`); }
+        else { const b = await res.json().catch(() => ({})); toast(b.error || "Publish failed"); }
+      } catch { toast("Publish failed"); }
+    }],
     null,
     ["Delete…", () => askLiquid(
       `Delete the ${app.name} app (remove apps/${app.id} and commit; git history keeps a copy).`

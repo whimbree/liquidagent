@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::AppState;
 
@@ -225,6 +225,83 @@ pub async fn app_log(
         Err(err) => {
             warn!("git log spawn failed: {err:#}");
             Json(json!({ "commits": [] })).into_response()
+        }
+    }
+}
+
+/// POST /api/apps/{app}/graduate — carve the app out into a standalone repo.
+///
+/// Splits `apps/<app>`'s history into its own root (preserving the commit
+/// trail — the audit story matters) and pushes it to the user-provided
+/// remote as `main`. A platform operation, not an agent one: history surgery
+/// stays in the trusted supervisor. The workspace copy is left in place; the
+/// human decides whether to remove it afterward (via the agent).
+#[derive(Deserialize)]
+pub struct GraduateBody {
+    remote: String,
+}
+
+pub async fn graduate(
+    State(state): State<AppState>,
+    UrlPath(app): UrlPath<String>,
+    Json(body): Json<GraduateBody>,
+) -> Response {
+    if !is_safe_app_id(&app) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if !state.workspace_dir.join(APPS_DIR).join(&app).exists() {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "no such app" }))).into_response();
+    }
+    let remote = body.remote.trim().to_string();
+    if remote.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "remote is required" }))).into_response();
+    }
+
+    // 1. subtree split -> a commit whose root is the app's directory.
+    let split = tokio::process::Command::new("git")
+        .args(["subtree", "split", &format!("--prefix={APPS_DIR}/{app}"), "HEAD"])
+        .current_dir(&state.workspace_dir)
+        .output()
+        .await;
+    let sha = match split {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        Ok(out) => {
+            warn!("subtree split failed: {}", String::from_utf8_lossy(&out.stderr));
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "could not split app history" })),
+            )
+                .into_response();
+        }
+        Err(err) => {
+            warn!("subtree split spawn failed: {err:#}");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
+
+    // 2. push that commit to the remote as main.
+    let push = tokio::process::Command::new("git")
+        .args(["push", &remote, &format!("{sha}:refs/heads/main")])
+        .current_dir(&state.workspace_dir)
+        .output()
+        .await;
+    match push {
+        Ok(out) if out.status.success() => {
+            info!("graduated {app} -> {remote}");
+            Json(json!({ "remote": remote, "ref": "main", "commit": sha })).into_response()
+        }
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            warn!("graduate push failed: {stderr}");
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("push failed: {stderr}") })),
+            )
+                .into_response()
+        }
+        Err(err) => {
+            warn!("graduate push spawn failed: {err:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
 }

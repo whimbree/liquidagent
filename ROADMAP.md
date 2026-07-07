@@ -138,7 +138,7 @@ survives everything.
 **Est: 1–2 weekends.** (This is `apps.toml`/hot-swap from the design doc,
 scoped to bare Bun processes — the gVisor swap point stays clean.)
 
-### M5 — "The factory" 🔶 (shipped: reviewed pipeline + anti-forgery boundary; app graduation deferred)
+### M5 — "The factory" ✅ (shipped: reviewed pipeline + anti-forgery boundary + app graduation)
 
 The pipeline from the design doc, now that there's something worth guarding.
 

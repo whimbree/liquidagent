@@ -149,6 +149,10 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/apps", get(apps::list_apps))
         .route("/api/apps/{app}/log", get(apps::app_log))
         .route(
+            "/api/apps/{app}/graduate",
+            axum::routing::post(apps::graduate),
+        )
+        .route(
             "/api/kv/{app}/{key}",
             get(apps::kv_get)
                 .put(apps::kv_put)
