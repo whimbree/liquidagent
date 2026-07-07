@@ -9,7 +9,11 @@ use tracing::{error, info, warn};
 
 use crate::config::Config;
 
-const AGENT_RESPAWN_DELAY: Duration = Duration::from_secs(1);
+const RESPAWN_DELAY_BASE: Duration = Duration::from_secs(1);
+const RESPAWN_DELAY_MAX: Duration = Duration::from_secs(30);
+/// A child that dies faster than this is considered crash-looping.
+const STABLE_UPTIME_THRESHOLD: Duration = Duration::from_secs(5);
+const CRASH_LOOP_HINT_AFTER: u32 = 3;
 const EVENT_CHANNEL_CAPACITY: usize = 1024;
 const REQUEST_CHANNEL_CAPACITY: usize = 64;
 
@@ -114,8 +118,10 @@ async fn manage_agent_process(
         .agent_command
         .split_first()
         .expect("agent command validated non-empty in Config::from_env");
+    let mut fast_exits: u32 = 0;
 
     loop {
+        let spawned_at = std::time::Instant::now();
         let mut child = match Command::new(program)
             .args(args)
             .env("LIQUID_WORKSPACE_DIR", &config.workspace_dir)
@@ -129,7 +135,8 @@ async fn manage_agent_process(
             Ok(child) => child,
             Err(err) => {
                 error!("failed to spawn agent harness ({program}): {err}");
-                tokio::time::sleep(AGENT_RESPAWN_DELAY).await;
+                fast_exits = fast_exits.saturating_add(1);
+                tokio::time::sleep(respawn_delay(fast_exits)).await;
                 continue;
             }
         };
@@ -187,7 +194,47 @@ async fn manage_agent_process(
 
         let _ = child.kill().await;
         let status = child.wait().await;
-        warn!("agent harness exited ({status:?}); respawning in {AGENT_RESPAWN_DELAY:?}");
-        tokio::time::sleep(AGENT_RESPAWN_DELAY).await;
+
+        if spawned_at.elapsed() >= STABLE_UPTIME_THRESHOLD {
+            fast_exits = 0;
+        } else {
+            fast_exits = fast_exits.saturating_add(1);
+        }
+        let delay = respawn_delay(fast_exits);
+        warn!("agent harness exited ({status:?}); respawning in {delay:?}");
+        if fast_exits == CRASH_LOOP_HINT_AFTER {
+            error!(
+                "agent harness is crash-looping. Check that the command is right \
+                 (LIQUID_AGENT_CMD or the built-in default: {}), that bun is on PATH, \
+                 and that its stderr above explains the exit.",
+                config.agent_command.join(" ")
+            );
+        }
+        tokio::time::sleep(delay).await;
+    }
+}
+
+/// 1s, 2s, 4s, ... capped at 30s while the harness is crash-looping.
+fn respawn_delay(fast_exits: u32) -> Duration {
+    if fast_exits == 0 {
+        return RESPAWN_DELAY_BASE;
+    }
+    RESPAWN_DELAY_BASE
+        .saturating_mul(1u32 << fast_exits.min(5))
+        .min(RESPAWN_DELAY_MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn respawn_backoff_escalates_and_caps() {
+        assert_eq!(respawn_delay(0), Duration::from_secs(1));
+        assert_eq!(respawn_delay(1), Duration::from_secs(2));
+        assert_eq!(respawn_delay(2), Duration::from_secs(4));
+        assert_eq!(respawn_delay(4), Duration::from_secs(16));
+        assert_eq!(respawn_delay(5), Duration::from_secs(30)); // capped
+        assert_eq!(respawn_delay(60), Duration::from_secs(30)); // no overflow
     }
 }
