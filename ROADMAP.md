@@ -152,11 +152,200 @@ The pipeline from the design doc, now that there's something worth guarding.
 **Demo:** promote the tracker to its own repo; review a change before it
 deploys.
 
-### M6+ — hardening & delight (existing Phase 2/3 track)
+> **M0–M5 are shipped.** What follows is the road to *polish* — the difference
+> between "a working demo" and "a personal computer you'd choose over a Mac."
+> Some of it already partially exists (scheduler/PULSE/CRON + Web Push landed
+> early, inside M4/M5); those are folded in below where they belong. The
+> product milestones (M6–M10) are shippable on today's single-owner homelab.
+> The **phases** (P2–P5) are the deep platform: bigger, deployment-coupled, and
+> sequenced behind one coherent piece of work — the isolation substrate.
 
-gVisor per app **and per harness**, scheduler (PULSE/CRON) with Web Push
-("your agent noticed something overnight"), voice input, per-app origins for
-real browser-level isolation, Hyperlight plugins.
+### M6 — "Mission Control" (the Control Panel)
+
+There is no settings surface yet. The plumbing exists (`db.set_setting`,
+`auth.set_password`); this is the container almost everything else slots into.
+Ships as a built-in app.
+
+- **Account:** change password (verify old → `set_password`); list/revoke
+  active sessions; "log out everywhere"
+- **Agent:** model picker (persist a `model` setting → harness passes it to
+  `query()`; today it uses the CLI default); reasoning-effort/thinking toggle
+- **Usage:** capture the `usage` + `total_cost_usd` the harness currently
+  *discards* from the SDK `result` message → per-conversation + cumulative
+  tokens and $. **Honest gap:** "how much of my Claude *plan* is left" has **no
+  supported API** — `/usage` is a TUI-only command with no headless/`-p`
+  surface. Show *consumption*; leave a `remaining` panel stubbed until there's
+  a real endpoint (or a clearly-labeled best-effort probe behind a flag)
+- **Appearance:** dark/light/accent, wallpaper
+- **Notifications:** push-subscription management, per-source toggles
+- **Storage:** disk-per-app, workspace size, prune
+- **Pipeline:** mode toggle (exists) + review history
+- **System:** version, health, restart, in-shell log viewer; git-remote/backup
+  config
+
+### M7 — "The desktop, finished" (completes M3’s 🔶)
+
+Resize, maximize, dock, per-app geometry persistence, and history popover
+already shipped. This closes the gap to real-WM feel.
+
+- **App-declared geometry:** extend the manifest (`RawManifest` currently only
+  has `name/icon/description`) with `width`/`height`/`minWidth`/`minHeight`/
+  `maxWidth`/`maxHeight` (+ optional aspect-lock); the shell honors them on open
+  instead of one hardcoded default size
+- **Snapping / light tiling:** edge + halves/quarters snap zones; keyboard
+  window-switcher; minimize-to-dock
+- **Folders:** grid grouping as **`SHELL.json` metadata**, *not* filesystem
+  dirs — app IDs and routes stay stable (iOS-style); drag-to-reorder, grid pages
+- **Command palette:** ⌘K spotlight — launch apps, run shell actions, or ask
+  the agent, from one bar
+- **In-shell notification tray** (distinct from OS push) + global search across
+  apps *and* conversations
+- **Voice input (fully local):** push-to-talk dictation into chat via
+  **`whisper.cpp`** (linked into the Rust supervisor with `whisper-rs`; model a
+  Nix-pinned artifact). Browser captures audio → supervisor transcribes with a
+  `base.en`/`small.en` model → text into the composer. Near-instant for short
+  utterances on any modern multi-core CPU — no GPU, no cloud, no API key,
+  nothing leaves the box. Model size is a Control-Panel setting (M6); a GPU is
+  only needed if you want `medium`/`large`
+- **Polish pass:** animations, loading/ghost states, the "app crashed — ask
+  liquid to fix it" state that pre-fills the console error into chat
+
+### M8 — "Read your own code" (the IDE)
+
+- **Full VS Code in-browser** via **`openvscode-server` + Open-VSX** (MIT;
+  *not* Microsoft's proprietary build/marketplace), proxied at `/ide` — reusing
+  the **existing** `backends.rs` reverse-proxy pattern; Nix-packaged, version
+  pinned. File tree, editor, git panel, diff view
+- **Decision required — edit authorship:** do in-IDE edits land as **your own
+  git commits** (a second author beside the agent — recommended; keeps history
+  honest) or is the IDE **read-only**, with all writes routed through the agent?
+- **Terminal-in-IDE is deferred to P3** — code-server's integrated terminal is
+  arbitrary execution; it turns on when the isolation substrate does
+
+### M9 — "Many minds" (multi-agent)
+
+The harness process is already swappable (`LIQUID_AGENT_CMD`), but the IPC +
+prompt are Claude-shaped. Generalize the seam.
+
+- **Agent-adapter contract:** spawn · stream tokens · report tool-use · resume;
+  today's `harness.ts` becomes the reference **Claude adapter**
+- **Codex adapter** (or others) behind the same contract; picker in the Control
+  Panel; per-conversation agent + model
+- **Cost budgets & rate-limit awareness**; **interrupt/cancel** a running query;
+  an **activity view** (what the agent is doing, live tool stream)
+- **Conversation management:** rename · search · export · delete
+- **Memory editor:** edit `MYHUMAN.md` / memory files from the shell (they're
+  read live from the workspace)
+
+### M10 — "A real platform" (app model v2)
+
+- **Manifest schema v2:** geometry (M7), `kind`, `version`, `category`, and a
+  **per-app permissions** block — which platform APIs, network egress, KV
+  scope, secrets
+- **Per-app secrets/env vault** (encrypted at rest); app **templates**/scaffolds
+- **Per-app origins** (wildcard subdomain through the proxy) for real
+  browser-level isolation — retires the "same-origin apps can call the chat WS"
+  caveat
+- **Jobs dashboard:** surface PULSE/CRON (the scheduler exists; it has no UI) —
+  see/enable/disable/trigger scheduled agent runs
+- **Rollback** (pipeline history → revert a deploy) and **backend-health
+  dashboard**; **import** a graduated app back, or install an external one
+- **Inter-app data** — a scoped, permissioned intent/shared-store bus so apps
+  can compose
+
+---
+
+## The deep platform — phases (deployment-coupled)
+
+### P2 — Portable isolation (the substrate) ← *unlocks the whole capability tier*
+
+Reframed from "sandbox the harness (a chore)" to **the single boundary that
+makes the terminal, arbitrary packages, and GUI apps safe at once.** liquid
+becomes the *orchestrator* of an isolation backend (like it already spawns Bun
+backends) — the boundary just upgrades from "another process" to "another
+kernel." Closes the documented Phase 0/1 hole (agent runs as the same unix
+user → could write `$DATA_DIR`).
+
+- **An `Isolation` trait**, not a hard dependency on any one tech — OS-agnostic
+  core, pluggable backends (mirrors how `LIQUID_AGENT_CMD` swaps the harness).
+  **Never couple the runtime to `microvm.nix`** (that would require NixOS)
+- **The isolation ladder** (each rung a backend):
+  1. **unix-user + namespaces** (bubblewrap / systemd hardening) — cheap,
+     Linux, meaningful
+  2. **gVisor** (`runsc`) — a **Nix-built OCI rootfs**, *no KVM needed*,
+     ~10–30% syscall overhead, weaker (shared-kernel) boundary, some
+     syscall-compat gaps. The "no-KVM" answer
+  3. **microVM** — **firecracker / cloud-hypervisor called directly over its
+     API socket** (not via `microvm.nix`), KVM, near-native, real kernel
+     boundary. The strong rung
+- **Split Nix's two jobs:** let Nix *build* the guest rootfs+kernel (reproducible,
+  version-pinned **build artifact**); let the **supervisor own the runtime
+  call**. Reproducible guests *without* NixOS-runtime coupling
+- **The boundary (virtiofs shares):** workspace git tree *in* (agent still
+  commits), host Nix store *in* read-only (so `nix shell` resolves instantly,
+  no re-download), **`$DATA_DIR` stays out** — that's the whole point
+- **Granularity is a knob — start coarse (one box):** the **supervisor stays
+  *outside*** as the trusted root (owns `$DATA_DIR`, auth, the deploy gate);
+  **agent + app backends + terminal all go *inside* one shared guest.** Simplest
+  to ship, lowest overhead, and it already closes the real single-owner threat
+  (host + anti-forgery protection, crash containment) — the honest asterisk
+  that's been in CLAUDE.md since day one. Design the `Isolation` trait so the
+  *unit* is a parameter; tightening to **per-app boxes** later is policy, not a
+  rewrite. **Split when** you install an untrusted third-party app, go
+  multi-user (P5), or an app backend handles untrusted network data — so one
+  popped app can't reach the workspace, the agent, or another app's secrets
+- Guest lifecycle (disposable vs long-lived); per-guest network policy; nested-
+  virt gate if liquid itself runs in a VM
+
+### P3 — The capability tier (rides on P2)
+
+All of these are the *same* security gate wearing different costumes; they turn
+on together once P2 exists.
+
+- **In-shell terminal** (xterm.js) — inside the isolation boundary
+- **Arbitrary packages, the Nix-native way:** `nix shell nixpkgs#anything` in a
+  disposable/declared guest against the shared read-only store — versioned, not
+  imperative. Per-app declared deps become part of the app's flake
+- **VS Code's integrated terminal** (from M8) becomes safe here
+- **Wayland GUI-app forwarding:** headless compositor (`cage` / `sway
+  --headless`) → encode → **VNC (`wayvnc` → noVNC canvas)** or **WebRTC**
+  (Selkies-style, lower latency) → input piped back. Solved art (Kasm / Neko).
+  On NixOS: declarative, per-app, on-brand
+- **GPU passthrough** (virtio-gpu / venus) for the GUI path
+
+### P4 — Portability (macOS / Windows first-class)
+
+Isolation is inherently OS-specific — there is **no single portable VMM**
+(firecracker is Linux/KVM-only). Portability = the P2 interface with per-OS
+backends, exactly how podman-machine / Lima do it.
+
+- **macOS:** Hypervisor.framework via **`libkrun`** (one library, KVM-on-Linux +
+  HVF-on-macOS behind one API — collapses two backends into one) or vfkit
+- **Windows:** WHP / Hyper-V (or WSL2)
+- Near-native on every OS via its *own* hardware hypervisor — the slow
+  emulation path (QEMU TCG, 5–20× slower) is never shipped
+- OS-agnostic path/process abstractions in the core; non-Nix packaging (mac app
+  bundle, Windows service/installer)
+
+### P5 — Multi-user & the hosted relay
+
+- Accounts / multi-user (the isolation from P2–P4 is a prerequisite)
+- The optional **self-hostable hosted relay** (morphy-style, but MIT and
+  transparent) — someone else's liquid without running the metal
+- Audit log, rate limiting, passkeys/2FA
+
+---
+
+## Continuous tracks (not milestones — always on)
+
+- **Observability:** in-shell log viewer, per-app crash reporting, usage/health
+  dashboards
+- **Data / sync / backup:** git-remote backup of the workspace, multi-device
+  sync (the workspace *is* git), whole-state export/import, secrets encrypted at
+  rest
+- **Quality:** keep `e2e/smoke.ts` green and grow it; a browser-driven test per
+  user-facing feature; keep the NixOS VM boot check passing — *boot it and drive
+  the real flow*, always
 
 ---
 
@@ -170,6 +359,13 @@ real browser-level isolation, Hyperlight plugins.
 | Windows vs. phone divergence | M2–M3 | One app model, two shells. Apps must not assume window size; the skill mandates responsive CSS. |
 | When does an app deserve a backend? | M2–M4 | Default no. KV until the app needs server logic or shared state. The agent decides and says why. |
 | Repo-per-app temptation | M5 | Resist until graduation — one workspace repo keeps the audit trail whole. Export is one-way and explicit. |
+| "Plan usage remaining" isn't queryable | M6 | No supported API; `/usage` is TUI-only. Show *consumption* (tokens/$ from the SDK result), stub *remaining*, fill it when there's a real endpoint. Don't ship a brittle scraper as a core feature. |
+| Human edits vs. agent authorship | M8 | A values fork: in-IDE edits commit as *you* (a second, honest author) vs. read-only + route through the agent. Recommend the former; either way, the git history stays truthful. |
+| "One portable VMM" is a mirage | P2/P4 | Isolation is OS-specific; firecracker is Linux/KVM-only. Don't chase a universal VMM or ship emulation (5–20× slower). Build an interface + per-OS *fast* backends (KVM/HVF/WHP), gVisor as the Linux no-KVM rung. |
+| Coupling the runtime to `microvm.nix` | P2 | Would make NixOS mandatory forever. Use Nix to *build* the guest image; own the firecracker/API runtime call yourself. Nix as builder, not orchestrator. |
+| The capability tier is one security gate | P3 | Terminal, VS Code's terminal, arbitrary packages, and Wayland GUI apps are the *same* arbitrary-execution boundary. They don't ship piecemeal ahead of P2 — they ride it together. |
+| gVisor ≠ a VM | P2 | It's a shared-kernel syscall substitute: no KVM, weaker boundary, compat gaps, no nested virt. Great as the no-KVM rung; not a substitute for the microVM rung when the boundary must be hard. |
+| One shared box vs. per-app boxes | P2 | One box protects the *host* but is a flat trust domain *inside* — fine for a single owner running only their own agent's apps. Start there; make granularity a knob so per-app boxes become a config change, not a rewrite, when untrusted apps / multi-user arrive. |
 
 ---
 
