@@ -180,6 +180,23 @@
   #appmenu button.danger { color:#f0a0a0; }
   #appmenu hr { border:0; border-top:1px solid #2a2a36; margin:0.25rem 0.4rem; }
 
+  /* pipeline banner */
+  #pipeline { position:fixed; top:0; left:0; right:0; z-index:35; display:none;
+              padding:0.55rem 1rem; font-size:0.9rem; align-items:center; gap:0.7rem;
+              border-bottom:1px solid #3a3a4a; }
+  #pipeline.show { display:flex; }
+  #pipeline.reviewing { background:#1c2436; color:#a8c0f0; }
+  #pipeline.rejected { background:#3a2418; color:#f0c89a; }
+  #pipeline .msg { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #pipeline button { padding:0.35rem 0.7rem; font-size:0.82rem; }
+  #pipeline .ghost { background:transparent; color:inherit; border:1px solid #ffffff33; }
+  #home.pushed { padding-top:3.6rem; }
+  #modepill { position:fixed; top:0.7rem; right:0.9rem; z-index:30; font-size:0.72rem;
+              padding:0.2rem 0.6rem; border-radius:999px; background:#1c1c26; color:var(--dim);
+              border:1px solid var(--line); cursor:pointer; }
+  #modepill:hover { color:#c9c9d4; }
+  #modepill.reviewed { color:#a8c0f0; border-color:#33436a; }
+
   /* toast */
   #toast { position:fixed; left:50%; bottom:calc(1.4rem + env(safe-area-inset-bottom));
            transform:translateX(-50%) translateY(200%); transition:transform 0.25s ease;
@@ -201,6 +218,12 @@
 </div>
 
 <div id="shell">
+  <div id="pipeline">
+    <span class="msg" id="pipeline-msg"></span>
+    <button id="pipeline-approve" class="ghost" hidden>Deploy anyway</button>
+    <button id="pipeline-dismiss" class="ghost">Dismiss</button>
+  </div>
+  <div id="modepill" title="Deploy pipeline mode — click to toggle">vibe</div>
   <div id="home">
     <h2>liquid</h2>
     <div id="grid"></div>
@@ -326,7 +349,58 @@ async function enterShell(appList) {
   await loadConversations();
   connect();
   initPush();
+  initPipeline();
 }
+
+/* ---------- deploy pipeline ---------- */
+async function initPipeline() {
+  try {
+    const p = await (await api("/api/pipeline")).json();
+    renderMode(p.mode);
+    renderPipeline(p.status);
+  } catch {}
+}
+function renderMode(mode) {
+  const pill = $("modepill");
+  pill.textContent = mode;
+  pill.classList.toggle("reviewed", mode === "reviewed");
+}
+function renderPipeline(status) {
+  const bar = $("pipeline");
+  const msg = $("pipeline-msg");
+  const approve = $("pipeline-approve");
+  bar.className = "";
+  if (!status || status.state === "clean") {
+    bar.classList.remove("show");
+    $("home").classList.remove("pushed");
+    return;
+  }
+  bar.classList.add("show");
+  $("home").classList.add("pushed");
+  if (status.state === "reviewing") {
+    bar.classList.add("reviewing");
+    msg.textContent = "⏳ Reviewing a change before it goes live…";
+    approve.hidden = true;
+  } else if (status.state === "rejected") {
+    bar.classList.add("rejected");
+    msg.textContent = "⚠️ A change was rejected and is not live: " + (status.reasoning || "");
+    approve.hidden = false;
+  }
+}
+$("modepill").onclick = async () => {
+  const current = $("modepill").textContent;
+  const next = current === "reviewed" ? "vibe" : "reviewed";
+  try {
+    await api("/api/pipeline", { method: "PUT", body: JSON.stringify({ mode: next }) });
+    renderMode(next);
+    toast(next === "reviewed" ? "Reviewed mode — changes get checked before going live" : "Vibe mode — changes ship immediately");
+  } catch { toast("Couldn't change mode"); }
+};
+$("pipeline-approve").onclick = async () => {
+  try { await api("/api/pipeline/approve", { method: "POST" }); toast("Deployed"); }
+  catch { toast("Approve failed"); }
+};
+$("pipeline-dismiss").onclick = () => { $("pipeline").classList.remove("show"); $("home").classList.remove("pushed"); };
 
 /* ---------- push notifications ---------- */
 let swReg = null;
@@ -799,6 +873,10 @@ function connect() {
     }
     if (ev.type === "notify") {
       toast(`🔔 ${ev.title}: ${ev.body}`);
+      return;
+    }
+    if (ev.type === "pipeline") {
+      renderPipeline(ev.status);
       return;
     }
     if (ev.type === "conversation_created") {

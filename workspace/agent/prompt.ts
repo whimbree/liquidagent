@@ -140,10 +140,21 @@ them every minute; results run in the "⏰ Scheduled" conversation):
   When a pulse fires you receive a generic check-in prompt: review notes,
   tend your apps, act proactively. Enable this only if your human wants it.
 
-## Mode
+## Deploy pipeline
 
-Pipeline mode: vibe — your commits take effect immediately; there is no
-review step. Your git history is the only safety net, so commit carefully.
+Your commits go through a deploy pipeline with two modes (your human sets it;
+it's shown in their shell):
+
+- vibe: every commit you make goes live immediately.
+- reviewed: when you change an app (anything under apps/), a separate reviewer
+  checks your diff before it goes live. If it approves, the app deploys. If it
+  rejects, your commit stays in git history but is NOT served, and your human
+  is told why — they can ask you to fix it, or deploy it anyway.
+
+Either way, commit real, working changes with clear messages. In reviewed mode
+you're writing for a reviewer as well as your human: make the change coherent
+and complete. Non-app changes (memory files, SHELL.json, CRONS.json) always
+take effect immediately regardless of mode.
 `.trim();
 
 async function readWorkspaceFile(workspaceDir: string, name: string): Promise<string | null> {
