@@ -5,6 +5,7 @@ mod auth;
 mod backends;
 mod config;
 mod db;
+mod push;
 mod scheduler;
 mod ws;
 
@@ -28,6 +29,7 @@ use crate::ws::ServerEvent;
 /// The shell page is embedded at compile time — no runtime path discovery.
 const SHELL_PAGE: &str = include_str!("../static/shell.html");
 const APP_ICON: &str = include_str!("../static/icon.svg");
+const SERVICE_WORKER: &str = include_str!("../static/sw.js");
 const PWA_MANIFEST: &str = r##"{
   "name": "liquid",
   "short_name": "liquid",
@@ -130,6 +132,13 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/kv/{app}", get(apps::kv_list))
         .route("/api/shell", get(apps::shell_get).put(apps::shell_put))
+        .route("/api/push/key", get(push::public_key))
+        .route("/api/push/subscribe", axum::routing::post(push::subscribe))
+        .route(
+            "/api/push/unsubscribe",
+            axum::routing::post(push::unsubscribe),
+        )
+        .route("/api/push/test", axum::routing::post(push::test))
         .route("/ws", get(ws::ws_handler))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -151,6 +160,18 @@ async fn main() -> anyhow::Result<()> {
             "/icon.svg",
             get(|| async {
                 ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], APP_ICON)
+            }),
+        )
+        .route(
+            "/sw.js",
+            get(|| async {
+                (
+                    [
+                        (axum::http::header::CONTENT_TYPE, "text/javascript"),
+                        (axum::http::header::CACHE_CONTROL, "no-cache"),
+                    ],
+                    SERVICE_WORKER,
+                )
             }),
         )
         .route(
@@ -240,6 +261,10 @@ async fn record_agent_events(state: AppState) {
                 continue;
             }
             AgentEvent::Shell { action, app, .. } => ServerEvent::ShellCommand { action, app },
+            AgentEvent::Notify { title, body, .. } => {
+                push::notify_all(&state, &title, &body).await;
+                ServerEvent::Notify { title, body }
+            }
             AgentEvent::Error { message, .. } => {
                 if let Err(err) = state.db.append_message(conversation_id, "error", &message) {
                     warn!("failed to persist error message: {err:#}");
@@ -256,6 +281,17 @@ async fn record_agent_events(state: AppState) {
                 if !content.is_empty() {
                     if let Err(err) = state.db.append_message(conversation_id, "assistant", &content) {
                         warn!("failed to persist assistant message: {err:#}");
+                    }
+                    // Scheduled runs finish while nobody's watching — push them.
+                    let scheduler_conversation = state
+                        .db
+                        .get_setting("scheduler_conversation_id")
+                        .ok()
+                        .flatten()
+                        .and_then(|v| v.parse::<i64>().ok());
+                    if scheduler_conversation == Some(conversation_id) {
+                        let snippet: String = content.chars().take(140).collect();
+                        push::notify_all(&state, "liquid ⏰", &snippet).await;
                     }
                 }
                 // The agent touched files — apps and backends may have changed.
@@ -303,7 +339,8 @@ fn conversation_id_of(event: &AgentEvent) -> Option<i64> {
         | AgentEvent::Done { id, .. }
         | AgentEvent::Error { id, .. }
         | AgentEvent::Session { id, .. }
-        | AgentEvent::Shell { id, .. } => id,
+        | AgentEvent::Shell { id, .. }
+        | AgentEvent::Notify { id, .. } => id,
     };
     match id.parse() {
         Ok(id) => Some(id),

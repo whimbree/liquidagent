@@ -24,7 +24,8 @@ export type AgentEvent =
   | { type: "done"; id: string; used_file_tools: boolean }
   | { type: "error"; id: string; message: string }
   | { type: "session"; id: string; session_id: string }
-  | { type: "shell"; id: string; action: "open_app"; app: string };
+  | { type: "shell"; id: string; action: "open_app"; app: string }
+  | { type: "notify"; id: string; title: string; body: string };
 
 /** stdout is the IPC channel — events only. Human-readable logging goes to stderr. */
 export function emit(event: AgentEvent): void {

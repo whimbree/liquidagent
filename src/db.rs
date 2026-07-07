@@ -38,6 +38,12 @@ CREATE TABLE IF NOT EXISTS kv (
     updated_at INTEGER NOT NULL,
     PRIMARY KEY (app, key)
 );
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint   TEXT PRIMARY KEY,
+    p256dh     TEXT NOT NULL,
+    auth       TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
 ";
 
 #[derive(Clone, Debug, Serialize)]
@@ -249,6 +255,30 @@ impl Db {
         let conn = self.lock();
         let mut stmt = conn.prepare("SELECT key FROM kv WHERE app = ?1 ORDER BY key")?;
         let rows = stmt.query_map([app], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    // --- push subscriptions --------------------------------------------------------
+
+    pub fn add_push_subscription(&self, endpoint: &str, p256dh: &str, auth: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth",
+            rusqlite::params![endpoint, p256dh, auth, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_push_subscription(&self, endpoint: &str) -> anyhow::Result<()> {
+        self.lock()
+            .execute("DELETE FROM push_subscriptions WHERE endpoint = ?1", [endpoint])?;
+        Ok(())
+    }
+
+    pub fn list_push_subscriptions(&self) -> anyhow::Result<Vec<(String, String, String)>> {
+        let conn = self.lock();
+        let mut stmt = conn.prepare("SELECT endpoint, p256dh, auth FROM push_subscriptions")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 

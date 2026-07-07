@@ -67,6 +67,12 @@ pub enum AgentEvent {
         action: String,
         app: String,
     },
+    /// The agent wants to notify its human (push + toast).
+    Notify {
+        id: String,
+        title: String,
+        body: String,
+    },
 }
 
 /// Handle to the agent harness child process. Cloneable; all clones talk to

@@ -63,6 +63,20 @@ const shellServer = createSdkMcpServer({
         return { content: [{ type: "text", text: `${app} is now open on their screen.` }] };
       },
     ),
+    tool(
+      "notify",
+      "Send a push notification to your human's devices (and a toast in the " +
+        "shell). Use sparingly: finished scheduled work, something they asked " +
+        "to be told about, or a genuinely important event — never routine chatter.",
+      {
+        title: z.string().describe("Short title, a few words"),
+        body: z.string().describe("One or two sentences"),
+      },
+      async ({ title, body }) => {
+        emit({ type: "notify", id: currentQueryId, title, body });
+        return { content: [{ type: "text", text: "Notification sent." }] };
+      },
+    ),
   ],
 });
 

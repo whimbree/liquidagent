@@ -115,7 +115,13 @@
              box-shadow:0 8px 24px rgba(0,0,0,0.5); display:flex; align-items:center;
              justify-content:center; }
   #chatfab.busy { animation:pulse 1.2s ease-in-out infinite; }
+  #chatfab::after { content:""; position:absolute; top:0.25rem; right:0.25rem; width:0.7rem;
+                    height:0.7rem; border-radius:50%; background:#e0645c; display:none; }
+  #chatfab.unread::after { display:block; }
   body.chat-open #chatfab { display:none; } /* never fight the keyboard's enter key */
+  .conv .unreaddot { width:0.5rem; height:0.5rem; border-radius:50%; background:#e0645c;
+                     align-self:center; flex-shrink:0; }
+  #stopbtn { background:#5c2b2b; }
   #chat { position:fixed; left:0; top:0; width:min(24rem, 100vw); height:min(68dvh, 44rem);
           z-index:50; background:#131319; border:1px solid #30303c; border-radius:14px;
           display:flex; flex-direction:column; overflow:hidden;
@@ -217,6 +223,7 @@
     <header>
       <button id="convtoggle" title="Conversations">☰</button>
       <b id="convtitle">New conversation</b>
+      <button id="bell" title="Push notifications">🔕</button>
       <button id="newchat" title="New conversation">＋</button>
       <button id="chatclose" title="Close">✕</button>
     </header>
@@ -225,6 +232,7 @@
     <div id="status"></div>
     <form id="composer">
       <input id="input" placeholder="Ask liquid…" autocomplete="off">
+      <button id="stopbtn" type="button" hidden title="Stop">⏹</button>
       <button id="send" type="submit" disabled>Send</button>
     </form>
   </aside>
@@ -317,6 +325,59 @@ async function enterShell(appList) {
   }
   await loadConversations();
   connect();
+  initPush();
+}
+
+/* ---------- push notifications ---------- */
+let swReg = null;
+async function initPush() {
+  if (!("serviceWorker" in navigator)) return;
+  try { swReg = await navigator.serviceWorker.register("/sw.js"); } catch {}
+  updateBell();
+}
+function b64ToU8(b64) {
+  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+async function currentSubscription() {
+  try { return swReg ? await swReg.pushManager.getSubscription() : null; } catch { return null; }
+}
+async function updateBell() {
+  $("bell").textContent = (await currentSubscription()) ? "🔔" : "🔕";
+}
+$("bell").onclick = async () => {
+  if (!swReg) { toast("Notifications need a service worker (https or localhost)"); return; }
+  const existing = await currentSubscription();
+  try {
+    if (existing) {
+      await api("/api/push/unsubscribe", { method: "POST", body: JSON.stringify({ endpoint: existing.endpoint }) });
+      await existing.unsubscribe();
+      toast("Notifications off");
+    } else {
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") { toast("Notifications blocked by the browser"); return; }
+      const { key } = await (await api("/api/push/key")).json();
+      const sub = await swReg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: b64ToU8(key),
+      });
+      const json = sub.toJSON();
+      await api("/api/push/subscribe", {
+        method: "POST",
+        body: JSON.stringify({ endpoint: sub.endpoint, keys: { p256dh: json.keys.p256dh, auth: json.keys.auth } }),
+      });
+      toast("Notifications on 🔔");
+      api("/api/push/test", { method: "POST" }); // instant proof it works
+    }
+  } catch (err) { toast("Push setup failed: " + err); }
+  updateBell();
+};
+
+/* ---------- unread state ---------- */
+const unread = new Set();
+function updateUnreadUi() {
+  $("chatfab").classList.toggle("unread", unread.size > 0);
 }
 
 function renderGrid() {
@@ -579,6 +640,11 @@ function renderConvList() {
     el.className = "conv" + (conv.id === activeConversation ? " active" : "");
     const label = document.createElement("span");
     label.textContent = conv.title || "Untitled";
+    if (unread.has(conv.id)) {
+      const dot = document.createElement("span");
+      dot.className = "unreaddot";
+      el.appendChild(dot);
+    }
     const del = document.createElement("span");
     del.className = "del"; del.textContent = "✕";
     del.onclick = async (e) => {
@@ -604,6 +670,7 @@ function bubble(cls, text, asMarkdown = false) {
 }
 async function openConversation(id) {
   activeConversation = id; currentBot = null;
+  unread.delete(id); updateUnreadUi();
   const conv = conversations.find(c => c.id === id);
   $("convtitle").textContent = conv ? conv.title : "liquid";
   renderConvList();
@@ -631,6 +698,7 @@ function summonChat(x, y) {
   const chat = $("chat");
   chat.classList.add("open");
   document.body.classList.add("chat-open");
+  if (activeConversation !== null) { unread.delete(activeConversation); updateUnreadUi(); renderConvList(); }
   if (!isMobile()) {
     if (typeof x === "number") {
       const w = chat.offsetWidth, h = chat.offsetHeight;
@@ -729,6 +797,10 @@ function connect() {
       }
       return;
     }
+    if (ev.type === "notify") {
+      toast(`🔔 ${ev.title}: ${ev.body}`);
+      return;
+    }
     if (ev.type === "conversation_created") {
       conversations.unshift({ id: ev.conversation_id, title: ev.title });
       if (activeConversation === null) {
@@ -738,6 +810,15 @@ function connect() {
       renderConvList();
       return;
     }
+    if (ev.type === "done" || ev.type === "error") {
+      // Anything finishing out of view gets an unread mark.
+      const chatOpen = $("chat").classList.contains("open");
+      if (ev.conversation_id !== activeConversation || !chatOpen) {
+        unread.add(ev.conversation_id);
+        updateUnreadUi();
+        renderConvList();
+      }
+    }
     if (ev.conversation_id !== activeConversation) return;
     switch (ev.type) {
       case "token": {
@@ -745,23 +826,37 @@ function connect() {
         currentBot.dataset.raw += ev.text;
         currentBot.innerHTML = renderMarkdown(currentBot.dataset.raw);
         $("log").scrollTop = $("log").scrollHeight;
+        setStreaming(true);
         break;
       }
       case "tool":
         $("status").textContent = `⚙ ${ev.name}…`;
         $("chatfab").classList.add("busy");
+        setStreaming(true);
         break;
       case "done":
         currentBot = null; $("status").textContent = "";
         $("chatfab").classList.remove("busy");
+        setStreaming(false);
         break;
       case "error":
         bubble("errmsg", ev.message); currentBot = null;
         $("status").textContent = ""; $("chatfab").classList.remove("busy");
+        setStreaming(false);
         break;
     }
   };
 }
+
+function setStreaming(active) {
+  $("stopbtn").hidden = !active;
+}
+$("stopbtn").onclick = () => {
+  if (ws && ws.readyState === WebSocket.OPEN && activeConversation !== null) {
+    ws.send(JSON.stringify({ type: "stop", conversation_id: activeConversation }));
+    $("status").textContent = "stopping…";
+  }
+};
 $("composer").onsubmit = (e) => {
   e.preventDefault();
   const content = $("input").value.trim();

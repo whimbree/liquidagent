@@ -10,7 +10,10 @@ anyhow = "1"
 axum = { version = "0.8", features = ["ws"] }
 chrono = "0.4"
 croner = "2"
+aes-gcm = "0.10"
 data-encoding = "2"
+hkdf = "0.12"
+p256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
 hyper = "1"
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
 rand = "0.9"

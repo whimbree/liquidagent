@@ -58,6 +58,11 @@ pub enum ServerEvent {
         action: String,
         app: String,
     },
+    /// The agent notified its human — shells show a toast (push went out too).
+    Notify {
+        title: String,
+        body: String,
+    },
 }
 
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {
