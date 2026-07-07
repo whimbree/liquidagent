@@ -11,6 +11,7 @@
  */
 import { query, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import { emit, logToStderr, readRequests, type AgentEvent } from "./ipc";
+import { buildSystemPromptAppend } from "./prompt";
 
 const MAX_TURNS_PER_QUERY = 50;
 const FILE_TOOL_NAMES = new Set(["Write", "Edit", "NotebookEdit"]);
@@ -37,12 +38,15 @@ const claudeBinary = resolveClaudeBinary();
 let sessionId: string | undefined;
 let activeQuery: Query | null = null;
 
-function startQuery(prompt: string): Query {
+async function startQuery(prompt: string): Promise<Query> {
+  // Rebuilt every query so memory edits take effect immediately.
+  const memoryAppend = await buildSystemPromptAppend(workspaceDir);
   return query({
     prompt,
     options: {
       cwd: workspaceDir,
       pathToClaudeCodeExecutable: claudeBinary,
+      systemPrompt: { type: "preset", preset: "claude_code", append: memoryAppend },
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
       maxTurns: MAX_TURNS_PER_QUERY,
@@ -95,7 +99,7 @@ function toEvents(requestId: string, message: SDKMessage, sawFileTool: { value: 
 
 async function runQuery(requestId: string, prompt: string): Promise<void> {
   const sawFileTool = { value: false };
-  const q = startQuery(prompt);
+  const q = await startQuery(prompt);
   activeQuery = q;
   try {
     for await (const message of q) {
@@ -120,7 +124,7 @@ if (Bun.argv[2] === "--once") {
     process.exit(2);
   }
   const sawFileTool = { value: false };
-  for await (const message of startQuery(prompt)) {
+  for await (const message of await startQuery(prompt)) {
     for (const event of toEvents("once", message, sawFileTool)) {
       if (event.type === "token") process.stdout.write(event.text);
       if (event.type === "tool") logToStderr(`tool: ${event.name}`);

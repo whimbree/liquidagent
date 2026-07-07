@@ -773,8 +773,8 @@ liquid/
 
 with lib;
 
-let cfg = config.services.liquid; in {
-  options.services.liquid = {
+let cfg = config.services.liquidagent; in {
+  options.services.liquidagent = {
     enable = mkEnableOption "liquid AI agent";
 
     port = mkOption {
@@ -814,7 +814,7 @@ let cfg = config.services.liquid; in {
 
     users.groups.${cfg.group} = {};
 
-    systemd.services.liquid = {
+    systemd.services.liquidagent = {
       description = "liquid AI agent supervisor";
       wantedBy = [ "multi-user.target" ];
       after = [ "network.target" ];
@@ -870,7 +870,7 @@ The NixOS module above runs identically on plain NixOS — a laptop, a bare-meta
     mountPoint = "/var/lib/liquid";
   }];
 
-  services.liquid = {
+  services.liquidagent = {
     enable = true;
     port = 3000;
     dataDir = "/var/lib/liquid";
@@ -1574,7 +1574,7 @@ Everything else, done properly, on top of the skeleton. No shortcuts that create
 **EARS-NIX: NixOS packaging**
 - [ ] `EARS-NIX-001` `pkgs.liquid` derivation builds successfully
 - [ ] `EARS-NIX-002` `nix run github:you/liquid` starts the supervisor
-- [ ] `EARS-NIX-003` NixOS module with `services.liquid` options
+- [ ] `EARS-NIX-003` NixOS module with `services.liquidagent` options
 - [ ] `EARS-NIX-004` systemd service with hardening options
 - [ ] `EARS-NIX-005` runs as a plain NixOS module on any host; microvm profile provided as an optional example
 - [ ] `EARS-NIX-006` first-run workspace initialization from nix store template

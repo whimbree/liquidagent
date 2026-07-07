@@ -1,0 +1,118 @@
+# NixOS module for liquid. Imported via the flake:
+#   imports = [ liquidagent.nixosModules.liquidagent ];
+#   services.liquidagent.enable = true;
+#
+# The supervisor binds localhost only — put your reverse proxy (with SSO) in
+# front. Claude credentials live under ${dataDir}/.claude (the service's
+# HOME); either log in once as the service user or provide ANTHROPIC_API_KEY
+# via services.liquidagent.environmentFile.
+self: { config, lib, pkgs, ... }:
+
+let
+  cfg = config.services.liquidagent;
+  packages = self.packages.${pkgs.stdenv.hostPlatform.system};
+in
+{
+  options.services.liquidagent = {
+    enable = lib.mkEnableOption "liquid AI agent";
+
+    port = lib.mkOption {
+      type = lib.types.port;
+      default = 3000;
+      description = "Port the supervisor listens on (localhost only).";
+    };
+
+    dataDir = lib.mkOption {
+      type = lib.types.str;
+      default = "/var/lib/liquidagent";
+      description = "State directory: agent workspace, Claude credentials.";
+    };
+
+    user = lib.mkOption {
+      type = lib.types.str;
+      default = "liquidagent";
+    };
+
+    group = lib.mkOption {
+      type = lib.types.str;
+      default = "liquidagent";
+    };
+
+    claudePackage = lib.mkOption {
+      type = lib.types.package;
+      default = pkgs.claude-code;
+      defaultText = lib.literalExpression "pkgs.claude-code";
+      description = ''
+        Claude Code package providing the `claude` binary the agent harness
+        drives. Unfree — the host must allow it, e.g.:
+        nixpkgs.config.allowUnfreePredicate = pkg:
+          builtins.elem (lib.getName pkg) [ "claude-code" ];
+      '';
+    };
+
+    environmentFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.path;
+      default = null;
+      description = ''
+        Optional EnvironmentFile (e.g. containing ANTHROPIC_API_KEY=...).
+        Keep it out of the nix store — use agenix/sops-nix or a root-owned file.
+      '';
+    };
+  };
+
+  config = lib.mkIf cfg.enable {
+    users.users.${cfg.user} = {
+      isSystemUser = true;
+      group = cfg.group;
+      home = cfg.dataDir;
+    };
+    users.groups.${cfg.group} = { };
+
+    systemd.services.liquidagent = {
+      description = "liquid AI agent supervisor";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network.target" ];
+
+      # The agent's Bash tool and the harness need a sane PATH.
+      path = [
+        pkgs.bash
+        pkgs.coreutils
+        pkgs.git
+        pkgs.bun
+        cfg.claudePackage
+      ];
+
+      environment = {
+        HOME = cfg.dataDir;
+        LIQUID_PORT = toString cfg.port;
+        LIQUID_WORKSPACE_DIR = "${cfg.dataDir}/workspace";
+        LIQUID_AGENT_CMD =
+          "${pkgs.bun}/bin/bun run ${packages.liquid-agent}/share/liquid-agent/harness.ts";
+        LIQUID_CLAUDE_BIN = "${cfg.claudePackage}/bin/claude";
+      };
+
+      serviceConfig = {
+        ExecStart = lib.getExe packages.liquid;
+        User = cfg.user;
+        Group = cfg.group;
+        WorkingDirectory = cfg.dataDir;
+        StateDirectory = "liquidagent";
+        Restart = "on-failure";
+        RestartSec = "5s";
+        EnvironmentFile = lib.mkIf (cfg.environmentFile != null) cfg.environmentFile;
+
+        # Hardening (design doc §12). The agent runs arbitrary code by
+        # design; these scope the blast radius to dataDir.
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        ReadWritePaths = [ cfg.dataDir ];
+        CapabilityBoundingSet = "";
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+        SystemCallFilter = [ "@system-service" ];
+      };
+    };
+  };
+}

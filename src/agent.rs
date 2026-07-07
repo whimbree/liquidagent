@@ -101,6 +101,8 @@ async fn manage_agent_process(
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
+            // The harness must never outlive the supervisor.
+            .kill_on_drop(true)
             .spawn()
         {
             Ok(child) => child,

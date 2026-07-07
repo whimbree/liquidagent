@@ -23,9 +23,41 @@ cd workspace/agent && bun install && cd ../..
 cargo run
 ```
 
-The agent's workspace lives in `./dev-workspace` (created and `git init`ed on
+The agent's workspace lives in `./dev-workspace` (created from the
+`default-workspace/` template and `git init`ed with an initial commit on
 first boot, overridable via `LIQUID_WORKSPACE_DIR`). Every change the agent
-makes is meant to be a commit — `git -C dev-workspace log` is the audit trail.
+makes is a commit — `git -C dev-workspace log` is the audit trail.
+
+## Memory
+
+The agent has no memory between sessions except files in its workspace,
+injected into the system prompt on every query (so edits take effect
+immediately):
+
+| File | Purpose |
+|---|---|
+| `MYSELF.md` | Agent identity and operating manual, self-authored |
+| `MYHUMAN.md` | Everything it learns about you |
+| `MEMORY.md` | Long-term curated knowledge |
+| `memory/YYYY-MM-DD.md` | Daily notes (today's are injected too) |
+
+It maintains these itself and commits the changes — tell it your name, kill
+the harness, ask a fresh session who you are: it knows.
+
+## NixOS module
+
+```nix
+# flake input: liquidagent.url = "github:whimbree/liquidagent";
+imports = [ liquidagent.nixosModules.liquidagent ];
+services.liquidagent.enable = true;   # port 3000, state in /var/lib/liquidagent
+nixpkgs.config.allowUnfreePredicate = pkg:
+  builtins.elem (nixpkgs.lib.getName pkg) [ "claude-code" ];
+```
+
+The service runs hardened (localhost bind, `ProtectSystem=strict`, writes
+scoped to its state dir). Credentials: either log in once as the service
+user (`claude` with `HOME=/var/lib/liquidagent`) or point
+`services.liquidagent.environmentFile` at a file with `ANTHROPIC_API_KEY`.
 
 ## Spikes
 

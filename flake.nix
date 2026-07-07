@@ -50,6 +50,19 @@
         };
         default = liquid;
 
+        # The agent harness, store-packaged for the NixOS module: sources plus
+        # a symlink to the vendored node_modules.
+        liquid-agent = pkgs.stdenvNoCC.mkDerivation {
+          name = "liquid-agent";
+          src = cleanedSource ./workspace/agent;
+          dontBuild = true;
+          installPhase = ''
+            mkdir -p $out/share/liquid-agent
+            cp *.ts package.json tsconfig.json bun.lock $out/share/liquid-agent/
+            ln -s ${agent-deps} $out/share/liquid-agent/node_modules
+          '';
+        };
+
         # Spike 2 — Bun dependency vendoring as a fixed-output derivation,
         # pinned to bun.lock. First build fails with a hash mismatch: copy the
         # "got:" hash into outputHash. If the hash flaps across machines,
@@ -70,5 +83,27 @@
           outputHash = "sha256-QMECHQrJdH75Gigz//pm325Sm654fIQ72m0WPq+LrQ4=";
         };
       });
+
+      nixosModules = rec {
+        liquidagent = import ./nix/module.nix self;
+        default = liquidagent;
+      };
+
+      # Eval-only smoke check for the module:
+      #   nix eval .#nixosConfigurations.smoke.config.systemd.services.liquidagent.serviceConfig.ExecStart
+      nixosConfigurations.smoke = nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [
+          self.nixosModules.liquidagent
+          ({ lib, ... }: {
+            nixpkgs.config.allowUnfreePredicate = pkg:
+              builtins.elem (lib.getName pkg) [ "claude-code" ];
+            services.liquidagent.enable = true;
+            fileSystems."/" = { device = "/dev/null"; fsType = "ext4"; };
+            boot.loader.grub.enable = false;
+            system.stateVersion = "25.11";
+          })
+        ];
+      };
     };
 }
