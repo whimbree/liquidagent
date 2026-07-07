@@ -57,6 +57,12 @@ pub enum AgentEvent {
         id: String,
         session_id: String,
     },
+    /// The agent drove the shell (via its liquid-shell MCP tool).
+    Shell {
+        id: String,
+        action: String,
+        app: String,
+    },
 }
 
 /// Handle to the agent harness child process. Cloneable; all clones talk to

@@ -169,6 +169,51 @@ fn mime_for(path: &Path) -> &'static str {
     }
 }
 
+/// GET /api/apps/{app}/log — the app's git history within the workspace repo.
+pub async fn app_log(
+    State(state): State<AppState>,
+    UrlPath(app): UrlPath<String>,
+) -> Response {
+    if !is_safe_app_id(&app) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let output = tokio::process::Command::new("git")
+        .args([
+            "log",
+            "--format=%h%x09%ct%x09%s",
+            "--max-count=30",
+            "--",
+            &format!("{APPS_DIR}/{app}"),
+        ])
+        .current_dir(&state.workspace_dir)
+        .output()
+        .await;
+    match output {
+        Ok(out) if out.status.success() => {
+            let commits: Vec<serde_json::Value> = String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .filter_map(|line| {
+                    let mut parts = line.splitn(3, '\t');
+                    Some(json!({
+                        "hash": parts.next()?,
+                        "timestamp": parts.next()?.parse::<i64>().ok()?,
+                        "subject": parts.next()?,
+                    }))
+                })
+                .collect();
+            Json(json!({ "commits": commits })).into_response()
+        }
+        Ok(out) => {
+            warn!("git log failed: {}", String::from_utf8_lossy(&out.stderr));
+            Json(json!({ "commits": [] })).into_response()
+        }
+        Err(err) => {
+            warn!("git log spawn failed: {err:#}");
+            Json(json!({ "commits": [] })).into_response()
+        }
+    }
+}
+
 // --- KV endpoints -------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -252,5 +297,67 @@ pub async fn shell_put(
             warn!("failed to write {SHELL_FILE}: {err:#}");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_ids_are_charset_checked() {
+        assert!(is_safe_app_id("calculator"));
+        assert!(is_safe_app_id("my-app_2"));
+        assert!(!is_safe_app_id(""));
+        assert!(!is_safe_app_id("../evil"));
+        assert!(!is_safe_app_id("a/b"));
+        assert!(!is_safe_app_id("a b"));
+        assert!(!is_safe_app_id("a.b"));
+    }
+
+    #[test]
+    fn sanitize_rejects_traversal() {
+        assert_eq!(sanitize_relative("index.html"), Some(PathBuf::from("index.html")));
+        assert_eq!(sanitize_relative("css/app.css"), Some(PathBuf::from("css/app.css")));
+        assert_eq!(sanitize_relative("./a.js"), Some(PathBuf::from("a.js")));
+        assert_eq!(sanitize_relative("../MYHUMAN.md"), None);
+        assert_eq!(sanitize_relative("a/../../b"), None);
+        assert_eq!(sanitize_relative("/etc/passwd"), None);
+        assert_eq!(sanitize_relative(""), None);
+        assert_eq!(sanitize_relative("."), None);
+    }
+
+    #[test]
+    fn scan_reads_manifests_and_skips_broken_ones() {
+        let root = std::env::temp_dir().join(format!("liquid-scan-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let make = |id: &str, manifest: Option<&str>, index: bool| {
+            let dir = root.join("apps").join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            if let Some(m) = manifest {
+                std::fs::write(dir.join("app.json"), m).unwrap();
+            }
+            if index {
+                std::fs::write(dir.join("index.html"), "<h1>x</h1>").unwrap();
+            }
+        };
+        make("good", Some(r#"{"name":"Good","icon":"✅","description":"d"}"#), true);
+        make("noicon", Some(r#"{"name":"NoIcon"}"#), true);
+        make("broken", Some("{not json"), true);
+        make("noindex", Some(r#"{"name":"NoIndex"}"#), false);
+        make("nomanifest", None, true);
+
+        let apps = scan_apps(&root);
+        let ids: Vec<&str> = apps.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec!["good", "noicon"]);
+        assert_eq!(apps[0].icon, "✅");
+        assert_eq!(apps[1].icon, DEFAULT_ICON);
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn scan_of_missing_dir_is_empty() {
+        assert!(scan_apps(Path::new("/nonexistent/liquid-test")).is_empty());
     }
 }

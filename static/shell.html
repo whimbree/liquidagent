@@ -68,6 +68,27 @@
   .titlebar button:hover { background:#ffffff14; color:white; }
   .window iframe { flex:1; border:0; width:100%; background:var(--bg); }
   .window.dragging iframe { pointer-events:none; }
+  .window.maximized { inset:0 !important; width:100% !important; height:100% !important;
+                      border-radius:0; resize:none; }
+  .histpop { position:absolute; top:2.1rem; right:0.4rem; width:min(22rem, 92%); max-height:55%;
+             overflow-y:auto; background:#1b1b24; border:1px solid #30303c; border-radius:10px;
+             box-shadow:0 10px 30px rgba(0,0,0,0.55); z-index:5; padding:0.3rem 0; }
+  .histpop .commit { padding:0.35rem 0.7rem; font-size:0.8rem; display:flex; gap:0.5rem; }
+  .histpop .commit code { color:#8fa8e8; }
+  .histpop .commit span { flex:1; color:#c9c9d4; overflow:hidden; text-overflow:ellipsis;
+                          white-space:nowrap; }
+  .histpop .commit small { color:var(--dim); }
+  .histpop .none { padding:0.5rem 0.8rem; color:var(--dim); font-size:0.85rem; }
+
+  /* dock */
+  #dock { position:fixed; left:50%; bottom:0.9rem; transform:translateX(-50%); z-index:45;
+          display:none; gap:0.35rem; background:#16161ccc; backdrop-filter:blur(12px);
+          border:1px solid #2c2c38; border-radius:14px; padding:0.35rem 0.5rem; }
+  #dock.visible { display:flex; }
+  #dock button { background:transparent; font-size:1.25rem; padding:0.25rem 0.45rem;
+                 border-radius:9px; }
+  #dock button:hover { background:#ffffff14; }
+  @media (max-width:720px) { #dock { display:none !important; } }
 
   /* mobile fullscreen app */
   #mobileapp { display:none; position:absolute; inset:0; z-index:40; background:var(--bg);
@@ -154,6 +175,8 @@
       <button id="mobilereload">↻</button></header>
     <iframe id="mobileframe" title="app"></iframe>
   </div>
+
+  <div id="dock"></div>
 
   <button id="chatfab" title="Chat with liquid">💬</button>
 
@@ -311,7 +334,9 @@ function openApp(id, focus) {
     <div class="titlebar">
       <span class="ticon">${escapeHtml(app.icon)}</span>
       <span class="tname">${escapeHtml(app.name)}</span>
+      <button class="history" title="History">🕘</button>
       <button class="reload" title="Reload">↻</button>
+      <button class="max" title="Maximize">▢</button>
       <button class="close" title="Close">✕</button>
     </div>
     <iframe src="/app/${encodeURIComponent(id)}/" title="${escapeHtml(app.name)}"></iframe>`;
@@ -319,6 +344,7 @@ function openApp(id, focus) {
   openWindows.set(id, win);
   layout.windows[id] = { x, y, w: win.offsetWidth, h: win.offsetHeight };
   scheduleLayoutSave();
+  renderDock();
 
   win.addEventListener("pointerdown", () => bringToFront(win));
   win.querySelector(".close").onclick = (e) => {
@@ -326,10 +352,36 @@ function openApp(id, focus) {
     win.remove(); openWindows.delete(id);
     delete layout.windows[id];
     scheduleLayoutSave();
+    renderDock();
   };
   win.querySelector(".reload").onclick = (e) => {
     e.stopPropagation();
     win.querySelector("iframe").src = `/app/${encodeURIComponent(id)}/`;
+  };
+  win.querySelector(".max").onclick = (e) => {
+    e.stopPropagation();
+    win.classList.toggle("maximized");
+    if (!win.classList.contains("maximized")) persistWindow(win);
+  };
+  win.querySelector(".history").onclick = async (e) => {
+    e.stopPropagation();
+    const existing = win.querySelector(".histpop");
+    if (existing) { existing.remove(); return; }
+    const pop = document.createElement("div");
+    pop.className = "histpop";
+    pop.innerHTML = `<div class="none">Loading…</div>`;
+    win.appendChild(pop);
+    try {
+      const data = await (await api(`/api/apps/${encodeURIComponent(id)}/log`)).json();
+      pop.innerHTML = data.commits.length === 0
+        ? `<div class="none">No history yet.</div>`
+        : data.commits.map(c => {
+            const when = new Date(c.timestamp * 1000).toLocaleString(undefined,
+              { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit" });
+            return `<div class="commit"><code>${escapeHtml(c.hash)}</code>
+                    <span>${escapeHtml(c.subject)}</span><small>${when}</small></div>`;
+          }).join("");
+    } catch { pop.innerHTML = `<div class="none">Couldn't load history.</div>`; }
   };
 
   // drag via titlebar
@@ -375,6 +427,21 @@ function persistWindow(win) {
 function bringToFront(win) {
   win.style.zIndex = ++zCounter;
   document.querySelectorAll(".window").forEach(w => w.classList.toggle("focused", w === win));
+}
+
+function renderDock() {
+  const dock = $("dock");
+  dock.innerHTML = "";
+  for (const [id, win] of openWindows) {
+    const app = apps.find(a => a.id === id);
+    if (!app) continue;
+    const btn = document.createElement("button");
+    btn.textContent = app.icon;
+    btn.title = app.name;
+    btn.onclick = () => bringToFront(win);
+    dock.appendChild(btn);
+  }
+  dock.classList.toggle("visible", openWindows.size > 0);
 }
 
 /* ---------- mobile app view ---------- */
@@ -475,6 +542,14 @@ function connect() {
       // drop windows of apps that no longer exist
       for (const [id, win] of openWindows) {
         if (!apps.some(a => a.id === id)) { win.remove(); openWindows.delete(id); }
+      }
+      renderDock();
+      return;
+    }
+    if (ev.type === "shell_command") {
+      if (ev.action === "open_app") {
+        const app = apps.find(a => a.id === ev.app);
+        if (app) { openApp(ev.app, true); toast(`liquid opened ${app.icon} ${app.name}`); }
       }
       return;
     }

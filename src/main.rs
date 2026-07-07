@@ -85,6 +85,7 @@ async fn main() -> anyhow::Result<()> {
             get(api::list_messages),
         )
         .route("/api/apps", get(apps::list_apps))
+        .route("/api/apps/{app}/log", get(apps::app_log))
         .route(
             "/api/kv/{app}/{key}",
             get(apps::kv_get)
@@ -173,6 +174,7 @@ async fn record_agent_events(state: AppState) {
                 }
                 continue;
             }
+            AgentEvent::Shell { action, app, .. } => ServerEvent::ShellCommand { action, app },
             AgentEvent::Error { message, .. } => {
                 if let Err(err) = state.db.append_message(conversation_id, "error", &message) {
                     warn!("failed to persist error message: {err:#}");
@@ -217,7 +219,8 @@ fn conversation_id_of(event: &AgentEvent) -> Option<i64> {
         | AgentEvent::Tool { id, .. }
         | AgentEvent::Done { id, .. }
         | AgentEvent::Error { id, .. }
-        | AgentEvent::Session { id, .. } => id,
+        | AgentEvent::Session { id, .. }
+        | AgentEvent::Shell { id, .. } => id,
     };
     match id.parse() {
         Ok(id) => Some(id),

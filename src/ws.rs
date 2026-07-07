@@ -52,6 +52,11 @@ pub enum ServerEvent {
     AppsChanged {
         apps: Vec<crate::apps::AppManifest>,
     },
+    /// The agent asked the shell to do something (e.g. open an app).
+    ShellCommand {
+        action: String,
+        app: String,
+    },
 }
 
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {

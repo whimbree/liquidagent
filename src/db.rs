@@ -79,6 +79,15 @@ impl Db {
         let conn = Connection::open(path)
             .with_context(|| format!("opening database {}", path.display()))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+        Self::init(conn)
+    }
+
+    #[cfg(test)]
+    pub fn open_in_memory() -> anyhow::Result<Self> {
+        Self::init(Connection::open_in_memory()?)
+    }
+
+    fn init(conn: Connection) -> anyhow::Result<Self> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA).context("applying schema")?;
         Ok(Self {
@@ -270,5 +279,85 @@ impl Db {
                 other => Err(other),
             })?;
         Ok(found)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn conversation_and_message_roundtrip() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db.create_conversation("hello world").unwrap();
+        db.append_message(id, "user", "hi").unwrap();
+        db.append_message(id, "assistant", "hello!").unwrap();
+
+        let conversations = db.list_conversations().unwrap();
+        assert_eq!(conversations.len(), 1);
+        assert_eq!(conversations[0].title, "hello world");
+        assert_eq!(conversations[0].session_id, None);
+
+        let messages = db.list_messages(id).unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[1].content, "hello!");
+    }
+
+    #[test]
+    fn session_id_persists_per_conversation() {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.create_conversation("a").unwrap();
+        let b = db.create_conversation("b").unwrap();
+        db.set_conversation_session(a, "session-a").unwrap();
+        assert_eq!(db.conversation_session(a).unwrap(), Some("session-a".into()));
+        assert_eq!(db.conversation_session(b).unwrap(), None);
+    }
+
+    #[test]
+    fn delete_conversation_cascades_messages() {
+        let db = Db::open_in_memory().unwrap();
+        let id = db.create_conversation("bye").unwrap();
+        db.append_message(id, "user", "x").unwrap();
+        db.delete_conversation(id).unwrap();
+        assert!(db.list_conversations().unwrap().is_empty());
+        assert!(db.list_messages(id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn kv_is_scoped_per_app() {
+        let db = Db::open_in_memory().unwrap();
+        db.kv_set("calc", "state", "1+1").unwrap();
+        db.kv_set("notes", "state", "todo").unwrap();
+        assert_eq!(db.kv_get("calc", "state").unwrap(), Some("1+1".into()));
+        assert_eq!(db.kv_get("notes", "state").unwrap(), Some("todo".into()));
+        assert_eq!(db.kv_get("calc", "missing").unwrap(), None);
+
+        db.kv_set("calc", "state", "2+2").unwrap(); // upsert
+        assert_eq!(db.kv_get("calc", "state").unwrap(), Some("2+2".into()));
+        assert_eq!(db.kv_list("calc").unwrap(), vec!["state".to_string()]);
+
+        db.kv_delete("calc", "state").unwrap();
+        assert_eq!(db.kv_get("calc", "state").unwrap(), None);
+        assert_eq!(db.kv_get("notes", "state").unwrap(), Some("todo".into()));
+    }
+
+    #[test]
+    fn settings_upsert() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.get_setting("k").unwrap(), None);
+        db.set_setting("k", "v1").unwrap();
+        db.set_setting("k", "v2").unwrap();
+        assert_eq!(db.get_setting("k").unwrap(), Some("v2".into()));
+    }
+
+    #[test]
+    fn auth_sessions_expire() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_auth_session("fresh", 3600).unwrap();
+        db.insert_auth_session("stale", -10).unwrap();
+        assert!(db.auth_session_valid("fresh").unwrap());
+        assert!(!db.auth_session_valid("stale").unwrap());
+        assert!(!db.auth_session_valid("unknown").unwrap());
     }
 }

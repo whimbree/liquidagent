@@ -79,3 +79,31 @@ fn rand08() -> impl scrypt::password_hash::rand_core::CryptoRngCore {
     impl scrypt::password_hash::rand_core::CryptoRng for OsRngAdapter {}
     OsRngAdapter
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn password_lifecycle() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(!password_is_set(&db).unwrap());
+        assert!(set_password(&db, "short").is_err()); // < 8 chars rejected
+
+        set_password(&db, "correct horse battery").unwrap();
+        assert!(password_is_set(&db).unwrap());
+        assert!(verify_password(&db, "correct horse battery").unwrap());
+        assert!(!verify_password(&db, "wrong password").unwrap());
+    }
+
+    #[test]
+    fn token_lifecycle() {
+        let db = Db::open_in_memory().unwrap();
+        let token = create_session(&db).unwrap();
+        assert_eq!(token.len(), TOKEN_BYTES * 2); // hex encoding doubles length
+        assert!(validate_token(&db, &token));
+        assert!(!validate_token(&db, "forged-token"));
+        // Only the hash is stored — the raw token must not validate as a hash.
+        assert!(!db.auth_session_valid(&token).unwrap());
+    }
+}

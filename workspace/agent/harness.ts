@@ -9,7 +9,14 @@
  * stdout. Auth comes from Claude Code's existing credentials
  * (~/.claude/.credentials.json / ANTHROPIC_API_KEY) — the SDK resolves them.
  */
-import { query, type Query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  createSdkMcpServer,
+  query,
+  tool,
+  type Query,
+  type SDKMessage,
+} from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod";
 import { emit, logToStderr, readRequests, type AgentEvent } from "./ipc";
 import { buildSystemPromptAppend } from "./prompt";
 
@@ -35,6 +42,29 @@ function resolveClaudeBinary(): string {
 const claudeBinary = resolveClaudeBinary();
 
 let activeQuery: Query | null = null;
+/** Conversation id of the running query — shell tool events carry it. */
+let currentQueryId = "0";
+
+/**
+ * In-process MCP server giving the agent control of the shell. Tool calls
+ * become IPC events; the supervisor fans them out to connected shells.
+ */
+const shellServer = createSdkMcpServer({
+  name: "liquid-shell",
+  version: "1.0.0",
+  tools: [
+    tool(
+      "open_app",
+      "Open one of your apps on your human's screen. Use it after building or " +
+        "updating an app so they see it immediately, or when they ask you to open one.",
+      { app: z.string().describe("The app id — its directory name under apps/") },
+      async ({ app }) => {
+        emit({ type: "shell", id: currentQueryId, action: "open_app", app });
+        return { content: [{ type: "text", text: `${app} is now open on their screen.` }] };
+      },
+    ),
+  ],
+});
 
 async function startQuery(prompt: string, resumeSessionId?: string): Promise<Query> {
   // Rebuilt every query so memory edits take effect immediately.
@@ -49,6 +79,7 @@ async function startQuery(prompt: string, resumeSessionId?: string): Promise<Que
       allowDangerouslySkipPermissions: true,
       maxTurns: MAX_TURNS_PER_QUERY,
       includePartialMessages: true,
+      mcpServers: { "liquid-shell": shellServer },
       ...(resumeSessionId !== undefined ? { resume: resumeSessionId } : {}),
     },
   });
@@ -97,6 +128,7 @@ function toEvents(requestId: string, message: SDKMessage, sawFileTool: { value: 
 
 async function runQuery(requestId: string, prompt: string, sessionId?: string): Promise<void> {
   const sawFileTool = { value: false };
+  currentQueryId = requestId;
   const q = await startQuery(prompt, sessionId);
   activeQuery = q;
   try {

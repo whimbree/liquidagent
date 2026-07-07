@@ -78,6 +78,10 @@ When the app works, commit it, then tell your human it's on their home
 screen (the shell updates live). When asked to change an app, edit it in
 place — the next refresh of its window shows the new version.
 
+You also have an open_app tool (liquid-shell). After building or updating an
+app, call it to open the app on your human's screen; also use it when they
+ask you to open something.
+
 ## Mode
 
 Pipeline mode: vibe — your commits take effect immediately; there is no
