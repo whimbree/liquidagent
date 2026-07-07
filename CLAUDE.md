@@ -95,14 +95,21 @@ cargo run
 
 cargo test                        # Rust unit tests (in-memory DB, no network)
 cd workspace/agent && bun test    # IPC + prompt tests
+bun run e2e/smoke.ts              # full-stack smoke: boots a fake-harness
+                                  # supervisor, exercises auth/apps/KV/traversal/
+                                  # pipeline(reject+override+approve)/graduation/
+                                  # persistence, tears down. No credentials, CI-safe.
+nix build .#checks.x86_64-linux.module-boots   # boots the NixOS module in a VM
 ```
 
-Milestone e2e tests were driven from `bun` scripts hitting a running supervisor
-(fake harness for determinism, real agent for the actual demos), and the shell
-was verified in headless chromium via `puppeteer-core`. These live in scratch,
-not the repo — recreate per-change rather than trusting unit tests alone. The
-pattern that repeatedly paid off: **drive the real flow and observe behavior**,
-don't just typecheck.
+`e2e/smoke.ts` is the checked-in regression guard (fake harness, deterministic).
+Beyond it, milestone flows were verified by driving the real agent and the shell
+in headless chromium (`puppeteer-core`) from throwaway scripts. The pattern that
+repeatedly paid off — and caught real bugs unit tests missed (a 10s scrypt
+login, a git-less nix sandbox breaking the build) — is: **boot it and drive the
+real flow, observe behavior**, don't just typecheck. When changing platform
+code, run `cargo test` + `bun run e2e/smoke.ts`; for anything user-facing, drive
+the shell in a browser too.
 
 Env knobs: `LIQUID_PORT`, `LIQUID_WORKSPACE_DIR`, `LIQUID_DATA_DIR`,
 `LIQUID_PIPELINE_MODE` (vibe|reviewed), `LIQUID_FAKE_AGENT`, `LIQUID_CLAUDE_BIN`,
