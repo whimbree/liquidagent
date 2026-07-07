@@ -67,6 +67,14 @@ pub enum ServerEvent {
     Pipeline {
         status: crate::deploy::PipelineStatus,
     },
+    /// The single agent worker started or finished a conversation's query.
+    /// Because queries serialize, this tells every client why chat may pause
+    /// (e.g. a scheduled task is running).
+    AgentBusy {
+        conversation_id: i64,
+        title: String,
+        busy: bool,
+    },
 }
 
 pub async fn ws_handler(ws: WebSocketUpgrade, State(state): State<AppState>) -> Response {

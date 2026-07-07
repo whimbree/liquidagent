@@ -166,6 +166,10 @@
   .msg pre code { background:transparent; padding:0; }
   .msg a { color:#8fa8e8; }
   #status { font-size:0.75rem; color:var(--dim); padding:0 0.9rem 0.35rem; min-height:1.1rem; }
+  #busy { display:none; font-size:0.78rem; color:#a8c0f0; padding:0.35rem 0.9rem;
+          border-top:1px solid var(--line); background:#161a26; }
+  #busy.show { display:block; }
+  #busy::before { content:"⏳ "; }
   #composer { display:flex; gap:0.5rem; padding:0.6rem 0.8rem calc(0.6rem + env(safe-area-inset-bottom)); border-top:1px solid var(--line); }
   #composer input { flex:1; min-width:0; }
 
@@ -252,6 +256,7 @@
     </header>
     <div id="convlist"></div>
     <div id="log"></div>
+    <div id="busy"></div>
     <div id="status"></div>
     <form id="composer">
       <input id="input" placeholder="Ask liquid…" autocomplete="off">
@@ -452,6 +457,14 @@ $("bell").onclick = async () => {
 const unread = new Set();
 function updateUnreadUi() {
   $("chatfab").classList.toggle("unread", unread.size > 0);
+}
+
+/* ---------- agent-busy indicator (serialized worker) ---------- */
+let busyOn = null;
+function updateBusyIndicator() {
+  const el = $("busy");
+  if (busyOn) { el.textContent = `liquid is working on ${busyOn}…`; el.classList.add("show"); }
+  else { el.classList.remove("show"); }
 }
 
 function renderGrid() {
@@ -879,6 +892,17 @@ function connect() {
       renderPipeline(ev.status);
       return;
     }
+    if (ev.type === "agent_busy") {
+      // The single agent worker serializes queries. Show what it's on when
+      // it's NOT the conversation you're looking at, so chat never seems dead.
+      if (ev.busy && ev.conversation_id !== activeConversation) {
+        busyOn = ev.title || "another task";
+      } else if (!ev.busy) {
+        busyOn = null;
+      }
+      updateBusyIndicator();
+      return;
+    }
     if (ev.type === "conversation_created") {
       conversations.unshift({ id: ev.conversation_id, title: ev.title });
       if (activeConversation === null) {
@@ -941,6 +965,8 @@ $("composer").onsubmit = (e) => {
   if (!content || !ws || ws.readyState !== WebSocket.OPEN) return;
   bubble("user", content);
   currentBot = null;
+  // Queries serialize; if liquid is mid-task, say so instead of looking dead.
+  if (busyOn) $("status").textContent = `queued — liquid is finishing ${busyOn}`;
   ws.send(JSON.stringify({ type:"user_message", content, conversation_id: activeConversation }));
   $("input").value = "";
 };

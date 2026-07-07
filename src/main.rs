@@ -206,10 +206,7 @@ async fn main() -> anyhow::Result<()> {
                 )
             }),
         )
-        .route(
-            "/api/health",
-            get(|| async { Json(serde_json::json!({ "status": "ok" })) }),
-        )
+        .route("/api/health", get(health))
         .route("/api/auth/status", get(api::auth_status))
         .route("/api/auth/setup", axum::routing::post(api::auth_setup))
         .route("/api/auth/login", axum::routing::post(api::auth_login))
@@ -254,6 +251,8 @@ async fn main() -> anyhow::Result<()> {
 async fn record_agent_events(state: AppState) {
     let mut events = state.agent.subscribe();
     let mut buffers: HashMap<i64, String> = HashMap::new();
+    // Which conversation the single agent worker is currently processing.
+    let mut busy_conversation: Option<i64> = None;
 
     loop {
         let event = match events.recv().await {
@@ -269,6 +268,12 @@ async fn record_agent_events(state: AppState) {
             Some(id) => id,
             None => continue,
         };
+
+        // Any activity on a new conversation means the worker started it.
+        if busy_conversation != Some(conversation_id) {
+            busy_conversation = Some(conversation_id);
+            broadcast_busy(&state, conversation_id, true);
+        }
 
         let server_event = match event {
             AgentEvent::Token { text, .. } => {
@@ -332,12 +337,41 @@ async fn record_agent_events(state: AppState) {
                 if used_file_tools {
                     reconcile_deploy(&state, conversation_id).await;
                 }
+                busy_conversation = None;
+                broadcast_busy(&state, conversation_id, false);
                 ServerEvent::Done { conversation_id }
             }
         };
         // No connected clients is fine; the recorder already persisted.
         let _ = state.client_events.send(server_event);
     }
+}
+
+/// Health + a snapshot of platform state, handy for debugging a deploy.
+async fn health(axum::extract::State(state): axum::extract::State<AppState>) -> Json<serde_json::Value> {
+    let deployed = state.deploy.deployed_commit().unwrap_or_default();
+    let app_count = state.apps_cache.lock().expect("apps cache poisoned").len();
+    Json(serde_json::json!({
+        "status": "ok",
+        "pipeline_mode": state.deploy.mode(),
+        "pipeline_status": state.deploy.status(),
+        "deployed_commit": deployed,
+        "app_count": app_count,
+    }))
+}
+
+fn broadcast_busy(state: &AppState, conversation_id: i64, busy: bool) {
+    let title = state
+        .db
+        .conversation_title(conversation_id)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let _ = state.client_events.send(ServerEvent::AgentBusy {
+        conversation_id,
+        title,
+        busy,
+    });
 }
 
 /// Run the pipeline after the agent commits, then refresh served apps.

@@ -45,6 +45,7 @@ pub struct BackendStatus {
 }
 
 struct BackendHandle {
+    port: u16,
     /// Bumped to force a restart (backend files changed).
     restart_tx: watch::Sender<u64>,
     shutdown_tx: watch::Sender<bool>,
@@ -56,6 +57,8 @@ pub struct BackendManager {
     base_port: u16,
     backends: Mutex<HashMap<String, BackendHandle>>,
     next_offset: Mutex<u16>,
+    /// Ports freed when apps were removed, reused before allocating new ones.
+    freed_ports: Mutex<Vec<u16>>,
     statuses: Arc<Mutex<HashMap<String, BackendStatus>>>,
 }
 
@@ -66,6 +69,7 @@ impl BackendManager {
             base_port: supervisor_port.saturating_add(PORT_OFFSET),
             backends: Mutex::new(HashMap::new()),
             next_offset: Mutex::new(0),
+            freed_ports: Mutex::new(Vec::new()),
             statuses: Arc::new(Mutex::new(HashMap::new())),
         })
     }
@@ -90,6 +94,8 @@ impl BackendManager {
             info!("stopping backend for removed app {id}");
             if let Some(handle) = backends.remove(&id) {
                 let _ = handle.shutdown_tx.send(true);
+                // Reclaim the port so a churn of apps doesn't leak upward.
+                self.freed_ports.lock().expect("freed_ports poisoned").push(handle.port);
             }
             self.statuses.lock().expect("statuses poisoned").remove(&id);
         }
@@ -106,17 +112,22 @@ impl BackendManager {
                     }
                 }
                 None => {
-                    let port = {
-                        let mut offset = self.next_offset.lock().expect("offset poisoned");
-                        let port = self.base_port.saturating_add(*offset);
-                        *offset += 1;
-                        port
-                    };
+                    let port = self
+                        .freed_ports
+                        .lock()
+                        .expect("freed_ports poisoned")
+                        .pop()
+                        .unwrap_or_else(|| {
+                            let mut offset = self.next_offset.lock().expect("offset poisoned");
+                            let port = self.base_port.saturating_add(*offset);
+                            *offset += 1;
+                            port
+                        });
                     let (restart_tx, restart_rx) = watch::channel(0u64);
                     let (shutdown_tx, shutdown_rx) = watch::channel(false);
                     backends.insert(
                         id.clone(),
-                        BackendHandle { restart_tx, shutdown_tx, dir_mtime: mtime },
+                        BackendHandle { port, restart_tx, shutdown_tx, dir_mtime: mtime },
                     );
                     info!("starting backend for {id} on port {port}");
                     tokio::spawn(run_backend(

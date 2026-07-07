@@ -133,6 +133,20 @@ impl Db {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    pub fn conversation_title(&self, id: i64) -> anyhow::Result<Option<String>> {
+        let conn = self.lock();
+        let title = conn
+            .query_row("SELECT title FROM conversations WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .map(Some)
+            .or_else(|err| match err {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        Ok(title)
+    }
+
     pub fn conversation_session(&self, id: i64) -> anyhow::Result<Option<String>> {
         let conn = self.lock();
         let session = conn
