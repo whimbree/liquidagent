@@ -1,6 +1,0 @@
-{
-  "dependencies": {},
-  "devDependencies": {
-    "puppeteer-core": "^25.3.0"
-  }
-}
