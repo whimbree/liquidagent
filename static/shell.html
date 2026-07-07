@@ -781,6 +781,10 @@ $("mobilereload").onclick = () => { $("mobileframe").src = $("mobileframe").src;
 let conversations = [];
 let activeConversation = null;
 let currentBot = null;
+// conversationId -> { raw } : assistant text still streaming, kept in memory
+// independent of which conversation is on screen (the server only persists a
+// reply on "done", so this is what survives switching chats mid-stream).
+const streams = new Map();
 let ws = null;
 
 async function loadConversations() {
@@ -829,20 +833,30 @@ async function openConversation(id) {
   const conv = conversations.find(c => c.id === id);
   $("convtitle").textContent = conv ? conv.title : "liquid";
   renderConvList();
-  $("log").innerHTML = "";
   const data = await (await api(`/api/conversations/${id}/messages`)).json();
+  if (activeConversation !== id) return; // a newer switch superseded this load
+  $("log").innerHTML = "";
   for (const m of data.messages) {
     if (m.role === "user") bubble("user", m.content);
     else if (m.role === "assistant") bubble("bot", m.content, true);
     else if (m.role === "scheduled") bubble("scheduled", m.content);
     else bubble("errmsg", m.content);
   }
+  // Restore a reply that's still streaming into this conversation.
+  const pending = streams.get(id);
+  if (pending) {
+    currentBot = bubble("bot", "");
+    currentBot.innerHTML = renderMarkdown(pending.raw);
+    $("log").scrollTop = $("log").scrollHeight;
+  }
+  setStreaming(!!pending);
 }
 function newConversation() {
   activeConversation = null; currentBot = null;
   $("log").innerHTML = "";
   $("convtitle").textContent = "New conversation";
   renderConvList();
+  setStreaming(false);
   $("input").focus();
 }
 $("newchat").onclick = newConversation;
@@ -989,12 +1003,21 @@ function connect() {
         renderConvList();
       }
     }
+    // Buffer streaming assistant text per-conversation, on screen or not — the
+    // reply isn't persisted server-side until "done", so this is what survives
+    // switching chats mid-stream. openConversation() restores from here.
+    if (ev.type === "token") {
+      const s = streams.get(ev.conversation_id) ?? { raw: "" };
+      s.raw += ev.text;
+      streams.set(ev.conversation_id, s);
+    } else if (ev.type === "done" || ev.type === "error") {
+      streams.delete(ev.conversation_id);
+    }
     if (ev.conversation_id !== activeConversation) return;
     switch (ev.type) {
       case "token": {
-        if (!currentBot) { currentBot = bubble("bot", ""); currentBot.dataset.raw = ""; }
-        currentBot.dataset.raw += ev.text;
-        currentBot.innerHTML = renderMarkdown(currentBot.dataset.raw);
+        if (!currentBot) currentBot = bubble("bot", "");
+        currentBot.innerHTML = renderMarkdown(streams.get(ev.conversation_id)?.raw ?? "");
         $("log").scrollTop = $("log").scrollHeight;
         setStreaming(true);
         break;
