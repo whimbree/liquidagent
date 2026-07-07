@@ -307,6 +307,13 @@ impl Db {
         Ok(())
     }
 
+    /// Revoke every session. Used on a password change: rotating the password
+    /// must invalidate any token that could have leaked under the old one.
+    pub fn clear_auth_sessions(&self) -> anyhow::Result<()> {
+        self.lock().execute("DELETE FROM auth_sessions", [])?;
+        Ok(())
+    }
+
     pub fn auth_session_valid(&self, token_hash: &str) -> anyhow::Result<bool> {
         let conn = self.lock();
         // Opportunistic cleanup keeps the table tiny.
@@ -403,5 +410,16 @@ mod tests {
         assert!(db.auth_session_valid("fresh").unwrap());
         assert!(!db.auth_session_valid("stale").unwrap());
         assert!(!db.auth_session_valid("unknown").unwrap());
+    }
+
+    #[test]
+    fn clear_auth_sessions_revokes_all() {
+        let db = Db::open_in_memory().unwrap();
+        db.insert_auth_session("a", 3600).unwrap();
+        db.insert_auth_session("b", 3600).unwrap();
+        assert!(db.auth_session_valid("a").unwrap());
+        db.clear_auth_sessions().unwrap();
+        assert!(!db.auth_session_valid("a").unwrap());
+        assert!(!db.auth_session_valid("b").unwrap());
     }
 }

@@ -85,7 +85,22 @@ try {
   const login = await j("/api/auth/login", { method: "POST", body: JSON.stringify({ password: PASSWORD }) });
   check("login returns a token", typeof login.body?.token === "string");
   check("wrong password rejected", (await j("/api/auth/login", { method: "POST", body: JSON.stringify({ password: "nope" }) })).status === 401);
-  const token = login.body.token as string;
+  let token = login.body.token as string;
+
+  // --- account: change password ---
+  console.log("account");
+  const cp = (body: object, tok?: string) => j("/api/auth/change_password", { method: "POST", body: JSON.stringify(body) }, tok);
+  check("change-password rejects wrong current (403, not a 401 sign-out)",
+    (await cp({ old_password: "wrong-current", new_password: "a-fine-new-password" }, token)).status === 403);
+  check("change-password rejects a too-short new password (400)",
+    (await cp({ old_password: PASSWORD, new_password: "short" }, token)).status === 400);
+  const NEWPASS = "smoke-test-password-rotated";
+  const changed = await cp({ old_password: PASSWORD, new_password: NEWPASS }, token);
+  check("change-password succeeds and returns a fresh token", changed.status === 200 && typeof changed.body?.token === "string");
+  check("the old token is revoked after a password change", (await j("/api/conversations", {}, token)).status === 401);
+  check("the old password no longer logs in", (await j("/api/auth/login", { method: "POST", body: JSON.stringify({ password: PASSWORD }) })).status === 401);
+  check("the new password logs in", (await j("/api/auth/login", { method: "POST", body: JSON.stringify({ password: NEWPASS }) })).status === 200);
+  token = changed.body.token as string; // re-issued token carries the rest of the suite
 
   // --- apps + KV + traversal ---
   console.log("apps + storage");

@@ -146,6 +146,10 @@ async fn main() -> anyhow::Result<()> {
             "/api/conversations/{id}/messages",
             get(api::list_messages),
         )
+        .route(
+            "/api/auth/change_password",
+            axum::routing::post(api::auth_change_password),
+        )
         .route("/api/apps", get(apps::list_apps))
         .route("/api/apps/{app}/log", get(apps::app_log))
         .route(

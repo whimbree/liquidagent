@@ -207,6 +207,31 @@
            background:#22222e; border:1px solid #3a3a4a; padding:0.55rem 1rem;
            border-radius:10px; z-index:70; font-size:0.9rem; box-shadow:0 8px 24px rgba(0,0,0,0.5); }
   #toast.show { transform:translateX(-50%); }
+
+  /* control panel */
+  #settingsbtn { position:fixed; top:0.7rem; left:0.9rem; z-index:30; width:1.9rem; height:1.9rem;
+                 display:flex; align-items:center; justify-content:center; padding:0; font-size:0.95rem;
+                 border-radius:999px; background:#1c1c26; color:var(--dim); border:1px solid var(--line); }
+  #settingsbtn:hover { color:#c9c9d4; }
+  #panelbg { position:fixed; inset:0; z-index:80; background:rgba(0,0,0,0.55); padding:1rem;
+             display:none; align-items:center; justify-content:center; }
+  #panelbg.open { display:flex; }
+  #panel { width:min(30rem, 100%); max-height:88dvh; overflow-y:auto; background:var(--panel);
+           border:1px solid var(--line); border-radius:14px; box-shadow:0 20px 60px rgba(0,0,0,0.6); }
+  #panel > header { display:flex; align-items:center; gap:0.6rem; padding:0.85rem 1.1rem;
+                    border-bottom:1px solid var(--line); position:sticky; top:0; background:var(--panel); }
+  #panel > header b { flex:1; font-weight:500; }
+  #panel > header button { background:transparent; color:var(--dim); padding:0.2rem 0.5rem; }
+  .setting-section { padding:1rem 1.1rem; border-bottom:1px solid var(--line); }
+  .setting-section:last-child { border-bottom:0; }
+  .setting-section h3 { margin:0 0 0.25rem; font-size:0.7rem; letter-spacing:0.12em;
+                        text-transform:uppercase; color:var(--dim); font-weight:600; }
+  .setting-section p.hint { margin:0 0 0.7rem; color:var(--dim); font-size:0.82rem; line-height:1.5; }
+  .setting-section form { display:flex; flex-direction:column; gap:0.5rem; }
+  .setting-section input { width:100%; box-sizing:border-box; }
+  .setting-section .msg { font-size:0.82rem; min-height:1.1em; }
+  .setting-section .msg.ok { color:#8fd0a0; }
+  .setting-section .msg.err { color:#f0a0a0; }
 </style>
 </head>
 <body>
@@ -267,6 +292,24 @@
 
   <div id="appmenu"></div>
   <div id="toast"></div>
+
+  <button id="settingsbtn" title="Settings">⚙</button>
+  <div id="panelbg">
+    <div id="panel">
+      <header><b>Settings</b><button id="panelclose" title="Close">✕</button></header>
+      <div class="setting-section">
+        <h3>Account</h3>
+        <p class="hint">Change your password. This signs out every other device.</p>
+        <form id="pw-form">
+          <input id="pw-old" type="password" placeholder="Current password" autocomplete="current-password">
+          <input id="pw-new" type="password" placeholder="New password (8+ characters)" autocomplete="new-password">
+          <input id="pw-new2" type="password" placeholder="Confirm new password" autocomplete="new-password">
+          <button type="submit">Change password</button>
+          <div class="msg" id="pw-msg"></div>
+        </form>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -981,6 +1024,34 @@ $("composer").onsubmit = (e) => {
   if (busyOn) $("status").textContent = `queued — liquid is finishing ${busyOn}`;
   ws.send(JSON.stringify({ type:"user_message", content, conversation_id: activeConversation }));
   $("input").value = "";
+};
+
+/* ---------- settings / control panel ---------- */
+function closeSettings() {
+  $("panelbg").classList.remove("open");
+  $("pw-form").reset();
+  const m = $("pw-msg"); m.textContent = ""; m.className = "msg";
+}
+$("settingsbtn").onclick = () => $("panelbg").classList.add("open");
+$("panelclose").onclick = closeSettings;
+$("panelbg").onclick = (e) => { if (e.target === $("panelbg")) closeSettings(); };
+$("pw-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const msg = $("pw-msg"); msg.className = "msg";
+  const oldp = $("pw-old").value, np = $("pw-new").value, np2 = $("pw-new2").value;
+  if (np.length < 8) { msg.className = "msg err"; msg.textContent = "New password must be at least 8 characters."; return; }
+  if (np !== np2) { msg.className = "msg err"; msg.textContent = "New passwords don’t match."; return; }
+  // 403 (wrong current password) must not trip api()'s 401 sign-out path.
+  const r = await api("/api/auth/change_password", { method:"POST",
+    body: JSON.stringify({ old_password: oldp, new_password: np }) });
+  if (!r.ok) {
+    const b = await r.json().catch(() => ({}));
+    msg.className = "msg err"; msg.textContent = b.error || "Could not change password."; return;
+  }
+  const b = await r.json();
+  token = b.token; localStorage.setItem("liquid_token", token);
+  $("pw-form").reset();
+  msg.className = "msg ok"; msg.textContent = "Password changed. Other devices were signed out.";
 };
 
 boot();

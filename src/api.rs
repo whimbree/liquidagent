@@ -70,6 +70,41 @@ pub async fn auth_login(
     Ok(Json(json!({ "token": token })).into_response())
 }
 
+#[derive(Deserialize)]
+pub struct ChangePasswordBody {
+    old_password: String,
+    new_password: String,
+}
+
+/// Change the password for a logged-in owner (behind `require_auth`). Verifies
+/// the current password, then rotates: every existing session is revoked (any
+/// token leaked under the old password dies) and a fresh one is issued for this
+/// client. A wrong current password is a 403, not a 401 — the caller's *session*
+/// is fine, so the client must not treat it as a sign-out.
+pub async fn auth_change_password(
+    State(state): State<AppState>,
+    Json(body): Json<ChangePasswordBody>,
+) -> ApiResult<Response> {
+    if !auth::verify_password(&state.db, &body.old_password)? {
+        return Ok((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "current password is incorrect" })),
+        )
+            .into_response());
+    }
+    if body.new_password.len() < 8 {
+        return Ok((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "new password must be at least 8 characters" })),
+        )
+            .into_response());
+    }
+    auth::set_password(&state.db, &body.new_password)?;
+    state.db.clear_auth_sessions()?;
+    let token = auth::create_session(&state.db)?;
+    Ok(Json(json!({ "token": token })).into_response())
+}
+
 // --- auth middleware ------------------------------------------------------------
 
 #[derive(Deserialize)]
