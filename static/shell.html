@@ -3,6 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#101014">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
 <title>liquid</title>
 <style>
   :root {
@@ -154,6 +161,17 @@
   #composer { display:flex; gap:0.5rem; padding:0.6rem 0.8rem calc(0.6rem + env(safe-area-inset-bottom)); border-top:1px solid var(--line); }
   #composer input { flex:1; min-width:0; }
 
+  /* app context menu */
+  #appmenu { position:fixed; z-index:65; min-width:12rem; background:#1b1b24;
+             border:1px solid #30303c; border-radius:10px; padding:0.25rem;
+             box-shadow:0 12px 34px rgba(0,0,0,0.6); display:none; }
+  #appmenu.open { display:block; }
+  #appmenu button { display:block; width:100%; text-align:left; background:transparent;
+                    color:#d5d5e0; padding:0.45rem 0.7rem; border-radius:7px; font-size:0.9rem; }
+  #appmenu button:hover { background:#26263a; }
+  #appmenu button.danger { color:#f0a0a0; }
+  #appmenu hr { border:0; border-top:1px solid #2a2a36; margin:0.25rem 0.4rem; }
+
   /* toast */
   #toast { position:fixed; left:50%; bottom:calc(1.4rem + env(safe-area-inset-bottom));
            transform:translateX(-50%) translateY(200%); transition:transform 0.25s ease;
@@ -209,6 +227,7 @@
     </form>
   </aside>
 
+  <div id="appmenu"></div>
   <div id="toast"></div>
 </div>
 
@@ -311,10 +330,65 @@ function renderGrid() {
       ? `${app.name} — its backend crashed; ask liquid to fix it`
       : (app.description || app.name);
     el.onclick = () => openApp(app.id, true);
+    el.oncontextmenu = (e) => { e.preventDefault(); showAppMenu(app, e.clientX, e.clientY); };
+    // long-press = context menu on touch
+    let pressTimer = null;
+    el.addEventListener("touchstart", (e) => {
+      pressTimer = setTimeout(() => {
+        pressTimer = null;
+        const t = e.touches[0];
+        showAppMenu(app, t.clientX, t.clientY);
+      }, 550);
+    }, { passive: true });
+    el.addEventListener("touchend", () => { if (pressTimer) clearTimeout(pressTimer); });
+    el.addEventListener("touchmove", () => { if (pressTimer) clearTimeout(pressTimer); });
     grid.appendChild(el);
   }
   $("empty").hidden = apps.length > 0;
 }
+
+/* ---- app context menu: lifecycle actions are conversations ---- */
+function askLiquid(prefill) {
+  summonChat();
+  $("input").value = prefill;
+  $("input").focus();
+  $("input").setSelectionRange(prefill.length, prefill.length);
+}
+function showAppMenu(app, x, y) {
+  const menu = $("appmenu");
+  menu.innerHTML = "";
+  const items = [
+    ["Open", () => openApp(app.id, true)],
+    null,
+    ["Rename…", () => askLiquid(`Rename the ${app.name} app to: `)],
+    ["Change icon…", () => askLiquid(`Change the ${app.name} app's icon to: `)],
+    ["Improve…", () => askLiquid(`Improve the ${app.name} app: `)],
+    ["What changed?", async () => {
+      const data = await (await api(`/api/apps/${encodeURIComponent(app.id)}/log`)).json();
+      const lines = data.commits.slice(0, 8).map(c => `${c.hash} ${c.subject}`).join("\n");
+      toast(lines || "No history yet");
+    }],
+    null,
+    ["Delete…", () => askLiquid(
+      `Delete the ${app.name} app (remove apps/${app.id} and commit; git history keeps a copy).`
+    ), "danger"],
+  ];
+  for (const item of items) {
+    if (item === null) { menu.appendChild(document.createElement("hr")); continue; }
+    const [label, action, cls] = item;
+    const btn = document.createElement("button");
+    btn.textContent = label;
+    if (cls) btn.className = cls;
+    btn.onclick = () => { hideAppMenu(); action(); };
+    menu.appendChild(btn);
+  }
+  menu.classList.add("open");
+  const w = menu.offsetWidth, h = menu.offsetHeight;
+  menu.style.left = Math.min(x, innerWidth - w - 8) + "px";
+  menu.style.top = Math.min(y, innerHeight - h - 8) + "px";
+}
+function hideAppMenu() { $("appmenu").classList.remove("open"); }
+addEventListener("pointerdown", (e) => { if (!e.target.closest("#appmenu")) hideAppMenu(); });
 
 function toast(text) {
   const el = $("toast");
@@ -413,10 +487,23 @@ function openApp(id, focus) {
       win.style.left = Math.max(0, Math.min(ev.clientX - startX, innerWidth - 80)) + "px";
       win.style.top  = Math.max(0, Math.min(ev.clientY - startY, innerHeight - 60)) + "px";
     };
-    const up = () => {
+    const up = (ev) => {
       removeEventListener("pointermove", move);
       removeEventListener("pointerup", up);
       win.classList.remove("dragging");
+      // edge snap: left/right edge → half screen; top edge → maximize
+      const SNAP = 14;
+      if (ev.clientY <= SNAP) {
+        win.classList.add("maximized");
+        return; // geometry untouched; un-maximize restores it
+      }
+      if (ev.clientX <= SNAP || ev.clientX >= innerWidth - SNAP) {
+        const half = Math.floor(innerWidth / 2);
+        win.style.left = ev.clientX <= SNAP ? "0px" : half + "px";
+        win.style.top = "0px";
+        win.style.width = half + "px";
+        win.style.height = innerHeight + "px";
+      }
       persistWindow(win);
     };
     addEventListener("pointermove", move);
@@ -570,7 +657,13 @@ $("home").addEventListener("dblclick", (e) => {
   summonChat(e.clientX, e.clientY);
 });
 addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closeChat(); $("convlist").classList.remove("open"); }
+  if (e.key === "Escape") { closeChat(); $("convlist").classList.remove("open"); hideAppMenu(); }
+  // Ctrl+` cycles windows (Alt/Ctrl+Tab belong to the OS and browser)
+  if (e.key === "`" && e.ctrlKey && openWindows.size > 0) {
+    e.preventDefault();
+    const wins = [...openWindows.values()].sort((a, b) => a.style.zIndex - b.style.zIndex);
+    bringToFront(wins[0]); // lowest becomes top → round-robin
+  }
 });
 
 // drag the chat panel by its header (desktop)

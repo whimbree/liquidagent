@@ -26,6 +26,20 @@ use crate::ws::ServerEvent;
 
 /// The shell page is embedded at compile time — no runtime path discovery.
 const SHELL_PAGE: &str = include_str!("../static/shell.html");
+const APP_ICON: &str = include_str!("../static/icon.svg");
+const PWA_MANIFEST: &str = r##"{
+  "name": "liquid",
+  "short_name": "liquid",
+  "description": "Your personal software factory",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#101014",
+  "theme_color": "#101014",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}"##;
 
 /// Workspace template, embedded so first-run init needs no runtime paths.
 const WORKSPACE_TEMPLATE: &[(&str, &str)] = &[
@@ -120,6 +134,21 @@ async fn main() -> anyhow::Result<()> {
 
     let app = Router::new()
         .route("/", get(|| async { Html(SHELL_PAGE) }))
+        .route(
+            "/manifest.webmanifest",
+            get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/manifest+json")],
+                    PWA_MANIFEST,
+                )
+            }),
+        )
+        .route(
+            "/icon.svg",
+            get(|| async {
+                ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], APP_ICON)
+            }),
+        )
         .route(
             "/api/health",
             get(|| async { Json(serde_json::json!({ "status": "ok" })) }),
