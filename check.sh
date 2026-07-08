@@ -28,4 +28,7 @@ bun run e2e/smoke.ts
 step "e2e: shell smoke (headless chromium)"
 bun run e2e/shell-smoke.ts
 
+step "e2e: StrongLifts app + backend (offline-first + SQLite)"
+bun run e2e/stronglifts.ts
+
 printf '\n✅ ALL CHECKS PASSED\n'

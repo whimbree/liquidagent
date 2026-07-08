@@ -248,6 +248,13 @@ async fn run_backend(
     statuses: Arc<Mutex<HashMap<String, BackendStatus>>>,
 ) {
     let mut fast_restarts: u32 = 0;
+    // The documented convention (prompt.ts) is that a backend stores state in
+    // data/ (e.g. bun:sqlite at data/app.db). data/ is gitignored, so it isn't
+    // in the deployed worktree checkout — ensure it exists before the backend
+    // opens a database there, or bun:sqlite fails with SQLITE_CANTOPEN.
+    if let Err(err) = std::fs::create_dir_all(app_dir.join("data")) {
+        warn!("backend {app_id}: could not create data/ dir: {err}");
+    }
     loop {
         set_state(&statuses, &app_id, port, BackendState::Starting);
         let mut child = match Command::new("bun")

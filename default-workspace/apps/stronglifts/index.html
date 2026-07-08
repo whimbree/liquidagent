@@ -24,6 +24,9 @@
   .abtag{font-size:.72rem;font-weight:700;letter-spacing:.08em;padding:.2rem .5rem;border-radius:999px;
          background:var(--accent);color:#fff}
   .sub{color:var(--dim);font-size:.82rem;padding:0 1rem .4rem}
+  /* sync dot */
+  .sync{width:.55rem;height:.55rem;border-radius:50%;background:var(--dim);flex:none;transition:background .2s}
+  .sync.synced{background:var(--good)} .sync.pending{background:var(--warn)} .sync.offline{background:var(--bad)}
 
   main{flex:1;overflow-y:auto;padding:.4rem 1rem 1.4rem;-webkit-overflow-scrolling:touch}
   .hidden{display:none!important}
@@ -75,6 +78,23 @@
   .dot.d{background:var(--good)} .dot.m{background:var(--warn)}
   .empty{color:var(--dim);text-align:center;padding:2.5rem 1rem;line-height:1.7}
 
+  /* analytics */
+  .stat{display:flex;gap:.6rem;margin:.5rem 0}
+  .stat .card{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:.7rem .8rem;text-align:center}
+  .stat .card .n{font-size:1.5rem;font-weight:800;font-variant-numeric:tabular-nums}
+  .stat .card .k{color:var(--dim);font-size:.72rem;margin-top:.15rem}
+  .lc{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:.75rem .85rem;margin:.55rem 0}
+  .lc .lh{display:flex;align-items:baseline;gap:.5rem}
+  .lc .lh .nm{font-weight:600;flex:1}
+  .lc .lh .cur{font-variant-numeric:tabular-nums;font-weight:800}
+  .lc .lh .cur small{color:var(--dim);font-weight:500;font-size:.7rem}
+  .lc .badges{display:flex;gap:.5rem;margin:.5rem 0 .1rem;flex-wrap:wrap}
+  .lc .badge{background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:.22rem .6rem;font-size:.74rem;color:var(--dim)}
+  .lc .badge b{color:var(--text);font-variant-numeric:tabular-nums}
+  .lc svg,.volwrap svg{display:block;width:100%;height:auto}
+  .volwrap{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:.75rem .85rem;margin:.55rem 0}
+  .secttl{color:var(--dim);font-size:.78rem;padding:.6rem .2rem .1rem;font-weight:600}
+
   /* records */
   .rec{display:flex;justify-content:space-between;padding:.55rem .2rem;border-bottom:1px solid var(--line)}
   .rec .rv{font-variant-numeric:tabular-nums;font-weight:700}
@@ -123,6 +143,7 @@
 <body>
 <div class="app">
   <header>
+    <span class="sync" id="sync" title="sync status"></span>
     <h1 id="title">StrongLifts 5×5</h1>
     <span class="abtag" id="abtag">A</span>
   </header>
@@ -138,6 +159,7 @@
   <nav>
     <button data-tab="workout" class="on"><span class="i">🏋️</span>Workout</button>
     <button data-tab="history"><span class="i">📅</span>History</button>
+    <button data-tab="stats"><span class="i">📈</span>Analytics</button>
     <button data-tab="settings"><span class="i">⚙️</span>Settings</button>
   </nav>
 </div>
@@ -147,6 +169,7 @@
 "use strict";
 const $ = s => document.querySelector(s);
 const el = (t, c, h) => { const e = document.createElement(t); if (c) e.className = c; if (h != null) e.innerHTML = h; return e; };
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : Date.now() + "-" + Math.random().toString(16).slice(2));
 
 /* ---------- program ---------- */
 const LIFTS = {
@@ -157,6 +180,8 @@ const LIFTS = {
   deadlift: { name: "Deadlift",         sets: 1 },
 };
 const PROGRAM = { A: ["squat", "bench", "row"], B: ["squat", "ohp", "deadlift"] };
+// fields that make up the synced config blob (everything but local/session state)
+const CONFIG_KEYS = ["v", "setup", "units", "bar", "plates", "inc", "weights", "fails", "next", "rest", "sound", "vibrate", "wakelock", "warmups"];
 
 const DEFAULTS = {
   kg: { bar: 20, plates: [25, 20, 15, 10, 5, 2.5, 1.25], step: 2.5,
@@ -168,64 +193,115 @@ const DEFAULTS = {
 };
 
 /* ---------- state ---------- */
-const KEY = "sl5x5.state.v1";
+const KEY = "sl5x5.state.v2";
 let S = load();
 let tab = "workout";
 let rest = null; // { endsAt, dur }
 let restIv = null;
 let audio = null, wakeLock = null;
+let stats = null; // last-fetched analytics payload (for the Stats tab)
 
 function load() {
-  try { const s = JSON.parse(localStorage.getItem(KEY)); if (s && s.v === 1) return s; } catch {}
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY) || localStorage.getItem("sl5x5.state.v1"));
+    if (s && s.v >= 1) return migrate(s);
+  } catch {}
   return freshState("kg", false);
 }
 function freshState(units, done) {
   const d = DEFAULTS[units];
   return {
-    v: 1, setup: done, units,
+    v: 2, setup: done, units,
     bar: d.bar, plates: d.plates.slice(), inc: { ...d.inc },
     weights: { ...d.start },
     fails: { squat: 0, bench: 0, row: 0, ohp: 0, deadlift: 0 },
     next: "A",
     rest: { normal: 180, fail: 300, light: 90 },
     sound: true, vibrate: true, wakelock: true, warmups: true,
-    session: null, history: [],
+    session: null,
+    queue: [], recent: [], cfgDirty: false, updatedAt: 0,
   };
 }
-/* ---------- persistence: localStorage (offline) + platform KV (durable/sync) ---------- */
-// The app iframe is same-origin with the shell, so it can use the shell's auth
-// token to reach the SQLite-backed per-app KV. localStorage is the always-there
-// offline copy; KV is the durable, cross-device one. Last-write-wins by updatedAt.
-const KVURL = "/api/kv/stronglifts/state";
-const token = () => localStorage.getItem("liquid_token");
-const authHeaders = () => { const t = token(); return t ? { Authorization: "Bearer " + t } : {}; };
-async function pushRemote() {
-  if (!token()) return;
-  try {
-    await fetch(KVURL, { method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ value: JSON.stringify(S) }) });
-  } catch {}
-}
-async function pullRemote() {
-  if (!token()) return null;
-  try { const r = await fetch(KVURL, { headers: authHeaders() }); if (!r.ok) return null; return JSON.parse((await r.json()).value); }
-  catch { return null; }
-}
-let pushTimer = null;
-function save() {
-  S.updatedAt = Date.now();
-  localStorage.setItem(KEY, JSON.stringify(S));
-  clearTimeout(pushTimer); pushTimer = setTimeout(pushRemote, 800); // debounce; offline-safe
-}
-// On open: localStorage already rendered instantly; if the server has a newer
-// copy (e.g. from your other device), adopt it. Otherwise push ours up.
-async function syncOnLoad() {
-  const remote = await pullRemote();
-  if (remote && (remote.updatedAt || 0) > (S.updatedAt || 0)) {
-    S = remote; localStorage.setItem(KEY, JSON.stringify(S)); render();
-  } else {
-    pushRemote();
+// v1 stored history in a JSON blob; v2 keeps history as DB rows. Convert the old
+// blob into queued workouts (so they land in the DB) + a recent cache, once.
+function migrate(s) {
+  if (s.v === 1) {
+    const hist = Array.isArray(s.history) ? s.history : [];
+    s.queue = hist.map(h => ({
+      id: uid(), date: h.date, ab: h.ab, units: h.units || s.units,
+      lifts: (h.lifts || []).map(l => ({ key: l.key, name: l.name, weight: l.weight, reps: l.reps })),
+    }));
+    s.recent = hist.slice(0, 50);
+    delete s.history;
+    s.cfgDirty = true;
+    s.v = 2;
   }
+  s.queue = s.queue || []; s.recent = s.recent || [];
+  if (s.cfgDirty == null) s.cfgDirty = false;
+  s.updatedAt = s.updatedAt || 0;
+  return s;
+}
+
+/* ---------- persistence: localStorage (offline) + backend SQLite (durable) ----------
+   The workout screen runs entirely from localStorage, so it works with no signal.
+   Finished workouts queue and POST to the backend (idempotent by id — never lost).
+   Config is a last-write-wins blob. Analytics/history come from the backend's DB. */
+const API = "/app/stronglifts/api";
+const online = () => navigator.onLine !== false;
+async function api(method, path, body) {
+  const r = await fetch(API + path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) throw new Error(path + " " + r.status);
+  return r.status === 204 ? null : r.json();
+}
+function configSnapshot() { const o = {}; for (const k of CONFIG_KEYS) o[k] = S[k]; return o; }
+function applyConfig(c) { for (const k of CONFIG_KEYS) if (c[k] !== undefined) S[k] = c[k]; }
+
+function saveLocal() { localStorage.setItem(KEY, JSON.stringify(S)); }
+function save() { saveLocal(); syncDot(); }               // local/session only
+function saveCfg() { S.updatedAt = Date.now(); S.cfgDirty = true; saveLocal(); flushSoon(); } // config changed
+
+let flushTimer = null;
+function flushSoon() { syncDot(); clearTimeout(flushTimer); flushTimer = setTimeout(flush, 700); }
+let flushing = false;
+async function flush() {
+  if (flushing || !online()) { syncDot(); return; }
+  flushing = true;
+  try {
+    while (S.queue.length) {                    // finished workouts first (must not be lost)
+      await api("POST", "/workouts", S.queue[0]);
+      S.queue.shift(); saveLocal();
+    }
+    if (S.cfgDirty) {                           // then the config blob (last-write-wins)
+      await api("PUT", "/config", { json: configSnapshot(), updatedAt: S.updatedAt });
+      S.cfgDirty = false; saveLocal();
+    }
+  } catch {} finally { flushing = false; syncDot(); }
+}
+// Pull the server's view: adopt newer config (e.g. from another device) and
+// refresh the cached recent-history. Won't clobber an in-progress workout or
+// unpushed local edits.
+async function refresh() {
+  await flush();
+  if (!online()) return;
+  try {
+    const cfg = await api("GET", "/config");
+    if (cfg && cfg.json && (cfg.updatedAt || 0) > (S.updatedAt || 0) && !S.cfgDirty && !S.session) {
+      applyConfig(cfg.json); S.updatedAt = cfg.updatedAt; saveLocal(); render();
+    }
+    const recent = await api("GET", "/workouts?limit=50");
+    if (Array.isArray(recent)) { S.recent = recent; saveLocal(); if (tab === "history") render(); }
+  } catch {}
+  syncDot();
+}
+function syncDot() {
+  const d = $("#sync"); if (!d) return;
+  d.className = "sync " + (!online() ? "offline" : (S.queue.length || S.cfgDirty) ? "pending" : "synced");
+  d.title = !online() ? "offline — will sync when connected"
+    : (S.queue.length || S.cfgDirty) ? "syncing…" : "synced to your library";
 }
 
 /* ---------- helpers ---------- */
@@ -290,15 +366,17 @@ function finishWorkout() {
       }
     }
   }
-  S.history.unshift({
-    date: Date.now(), ab: sess.ab,
-    lifts: sess.lifts.map(l => ({ key: l.key, name: LIFTS[l.key].name, weight: l.weight, reps: l.reps.slice(), units: U() })),
-  });
-  S.history = S.history.slice(0, 400);
+  const workout = {
+    id: uid(), date: Date.now(), ab: sess.ab, units: U(),
+    lifts: sess.lifts.map(l => ({ key: l.key, name: LIFTS[l.key].name, weight: l.weight, reps: l.reps.slice() })),
+  };
+  S.recent.unshift(workout);
+  S.recent = S.recent.slice(0, 50);
+  S.queue.push(workout);              // -> POSTed to the DB (idempotent), even offline
   S.next = sess.ab === "A" ? "B" : "A";
   S.session = null;
   stopRest();
-  save();
+  saveCfg();                          // weights/fails/next changed -> push config + drain queue
   render();
 }
 
@@ -368,7 +446,9 @@ function render() {
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
   if (tab === "workout") renderWorkout();
   else if (tab === "history") renderHistory();
+  else if (tab === "stats") renderStats();
   else renderSettings();
+  syncDot();
 }
 
 function renderWorkout() {
@@ -417,9 +497,8 @@ function renderHistory() {
   $("#title").textContent = "History"; $("#subtitle").textContent = ""; $("#abtag").classList.add("hidden");
   const m = $("#main"); m.innerHTML = "";
 
-  // records
   const rec = el("div", "grp");
-  rec.append(el("div", "sub", "Current working weights").outerHTML ? el("div", null, "<div style='color:var(--dim);font-size:.8rem;padding:.5rem .2rem'>Working weights</div>") : "");
+  rec.append(el("div", null, "<div style='color:var(--dim);font-size:.8rem;padding:.5rem .2rem'>Working weights</div>"));
   Object.keys(LIFTS).forEach(k => {
     const r = el("div", "rec");
     r.append(el("span", null, LIFTS[k].name));
@@ -428,29 +507,103 @@ function renderHistory() {
   });
   m.append(rec);
 
-  if (S.history.length === 0) {
+  if (!S.recent.length) {
     m.append(el("div", "empty", "No workouts yet.<br>Finish one and it'll show up here."));
     return;
   }
-  S.history.forEach(h => {
+  S.recent.forEach(h => {
     const c = el("div", "h");
     const hh = el("div", "hh");
     hh.innerHTML = `<span class="abtag">${h.ab}</span> ${new Date(h.date).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}`;
     c.append(hh);
-    h.lifts.forEach(l => {
+    (h.lifts || []).forEach(l => {
       const row = el("div", "hl");
       row.append(el("span", "nm", `${l.name}`));
       const right = el("div", null);
       right.style.display = "flex"; right.style.alignItems = "center"; right.style.gap = ".6rem";
       const dots = el("div", "dots");
-      l.reps.forEach(r => dots.append(el("span", "dot" + (r === 5 ? " d" : r != null ? " m" : ""))));
-      right.append(el("span", null, `<span style="color:var(--dim);font-variant-numeric:tabular-nums">${fmt(l.weight)} ${l.units || U()}</span>`));
+      (l.reps || []).forEach(r => dots.append(el("span", "dot" + (r === 5 ? " d" : r != null ? " m" : ""))));
+      right.append(el("span", null, `<span style="color:var(--dim);font-variant-numeric:tabular-nums">${fmt(l.weight)} ${h.units || U()}</span>`));
       right.append(dots);
       row.append(right);
       c.append(row);
     });
     m.append(c);
   });
+}
+
+/* ---------- analytics ---------- */
+function lineChart(series, w, h) {
+  if (!series.length) return "";
+  const pad = 4;
+  const xs = series.map(p => p.date), ys = series.map(p => p.weight);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const sx = d => x1 === x0 ? w / 2 : pad + (w - 2 * pad) * (d - x0) / (x1 - x0);
+  const sy = v => y1 === y0 ? h / 2 : (h - pad) - (h - 2 * pad) * (v - y0) / (y1 - y0);
+  const pts = series.map(p => `${sx(p.date).toFixed(1)},${sy(p.weight).toFixed(1)}`);
+  const dots = series.map(p => `<circle cx="${sx(p.date).toFixed(1)}" cy="${sy(p.weight).toFixed(1)}" r="2" fill="var(--accent)"/>`).join("");
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="height:${h}px">
+    <polyline points="${pts.join(" ")}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>${dots}</svg>`;
+}
+function volChart(vol, w, h) {
+  const data = vol.slice(-20);
+  if (!data.length) return "";
+  const max = Math.max(...data.map(v => v.volume || 0)) || 1;
+  const bw = w / data.length;
+  const bars = data.map((v, i) => {
+    const bh = Math.max(2, (h - 6) * (v.volume || 0) / max);
+    const col = v.ab === "A" ? "var(--accent)" : "var(--good)";
+    return `<rect x="${(i * bw + bw * 0.15).toFixed(1)}" y="${(h - bh).toFixed(1)}" width="${(bw * 0.7).toFixed(1)}" height="${bh.toFixed(1)}" rx="1.5" fill="${col}"/>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="height:${h}px">${bars}</svg>`;
+}
+function renderStats() {
+  $("#title").textContent = "Analytics"; $("#subtitle").textContent = ""; $("#abtag").classList.add("hidden");
+  const m = $("#main"); m.innerHTML = "";
+  if (!stats) {
+    m.append(el("div", "empty", online() ? "Crunching your numbers…" : "Connect to load your analytics.<br>They're computed from your saved workouts."));
+    fetchStats();
+    return;
+  }
+  const t = stats.totals || { workouts: 0, thisWeek: 0, first: null };
+  if (!t.workouts) { m.append(el("div", "empty", "No data yet.<br>Finish a few workouts and your trends appear here.")); return; }
+
+  const st = el("div", "stat");
+  st.append(el("div", "card", `<div class="n">${t.workouts}</div><div class="k">workouts</div>`));
+  st.append(el("div", "card", `<div class="n">${t.thisWeek}</div><div class="k">this week</div>`));
+  const days = t.first ? Math.max(1, Math.round((Date.now() - t.first) / 864e5)) : 0;
+  st.append(el("div", "card", `<div class="n">${days}</div><div class="k">days training</div>`));
+  m.append(st);
+
+  m.append(el("div", "secttl", "Per lift"));
+  Object.keys(LIFTS).forEach(k => {
+    const a = stats.lifts[k]; if (!a || !a.sets) return;
+    const c = el("div", "lc");
+    const lh = el("div", "lh");
+    lh.append(el("span", "nm", LIFTS[k].name));
+    lh.append(el("span", "cur", a.current != null ? `${fmt(a.current)} <small>${U()}</small>` : "—"));
+    c.append(lh);
+    const badges = el("div", "badges");
+    badges.append(el("span", "badge", `best 5×5 <b>${a.best5x5 != null ? fmt(a.best5x5) : "—"}</b>`));
+    badges.append(el("span", "badge", `est 1RM <b>${a.e1rm != null ? fmt(a.e1rm) : "—"}</b>`));
+    badges.append(el("span", "badge", `<b>${a.sets}</b> sets`));
+    c.append(badges);
+    c.insertAdjacentHTML("beforeend", lineChart(a.series || [], 300, 54));
+    m.append(c);
+  });
+
+  if ((stats.volume || []).length) {
+    m.append(el("div", "secttl", "Volume per workout (last 20)"));
+    const vw = el("div", "volwrap");
+    vw.insertAdjacentHTML("beforeend", volChart(stats.volume, 300, 70));
+    vw.append(el("div", "hint", "Total weight moved (weight × reps). Blue = A, green = B."));
+    m.append(vw);
+  }
+}
+async function fetchStats() {
+  if (!online()) return;
+  try { stats = await api("GET", "/analytics"); if (tab === "stats") renderStats(); } catch {}
 }
 
 function renderSettings() {
@@ -498,24 +651,29 @@ function renderSettings() {
   const pe = el("div", "plateedit");
   S.plates.slice().sort((a, b) => b - a).forEach(p => {
     const pl = el("div", "pl", `${fmt(p)} `);
-    const x = el("button", null, "✕"); x.onclick = () => { S.plates = S.plates.filter(q => q !== p); save(); render(); };
+    const x = el("button", null, "✕"); x.onclick = () => { S.plates = S.plates.filter(q => q !== p); saveCfg(); render(); };
     pl.append(x); pe.append(pl);
   });
   g5.append(pe);
   const addPlate = el("div", "field");
   addPlate.innerHTML = `<label>Add a plate size</label>`;
   const ap = el("input"); ap.type = "number"; ap.step = "0.25"; ap.placeholder = `e.g. ${U() === "kg" ? "1.25" : "2.5"}`;
-  ap.onchange = () => { const v = parseFloat(ap.value); if (v > 0 && !S.plates.includes(v)) { S.plates.push(v); save(); render(); } };
+  ap.onchange = () => { const v = parseFloat(ap.value); if (v > 0 && !S.plates.includes(v)) { S.plates.push(v); saveCfg(); render(); } };
   addPlate.append(ap); g5.append(addPlate);
   m.append(g5);
 
   // reset
   const g6 = el("div", "grp");
   const rw = el("button", "dangerbtn", "Reset weights to defaults");
-  rw.onclick = () => { if (confirm("Reset all working weights and progress to the defaults for " + U() + "?")) { const f = freshState(U(), true); S.weights = f.weights; S.fails = f.fails; S.session = null; save(); render(); } };
+  rw.onclick = () => { if (confirm("Reset all working weights and progress to the defaults for " + U() + "?")) { const f = freshState(U(), true); S.weights = f.weights; S.fails = f.fails; S.session = null; saveCfg(); render(); } };
   g6.append(rw);
   const ra = el("button", "dangerbtn", "Erase everything");
-  ra.onclick = () => { if (confirm("Erase ALL data including history? This can't be undone.")) { localStorage.removeItem(KEY); S = load(); tab = "workout"; render(); } };
+  ra.onclick = async () => {
+    if (!confirm("Erase ALL data including history, on this device AND the server? This can't be undone.")) return;
+    try { if (online()) await api("DELETE", "/all"); } catch {}
+    localStorage.removeItem(KEY); localStorage.removeItem("sl5x5.state.v1");
+    S = freshState("kg", false); stats = null; tab = "workout"; render();
+  };
   g6.append(ra);
   m.append(g6);
 }
@@ -525,14 +683,14 @@ function addNum(parent, label, value, onset) {
   row.append(el("label", null, label));
   const inp = el("input", "val"); inp.type = "number"; inp.step = "any"; inp.value = value;
   inp.inputMode = "decimal";
-  inp.onchange = () => { const v = parseFloat(inp.value); if (!isNaN(v)) { onset(v); save(); } };
+  inp.onchange = () => { const v = parseFloat(inp.value); if (!isNaN(v)) { onset(v); saveCfg(); } };
   row.append(inp); parent.append(row);
 }
 function addToggle(parent, label, key) {
   const row = el("div", "row");
   row.append(el("label", null, label));
   const t = el("button", "toggle" + (S[key] ? " on" : ""), "<span class='k'></span>");
-  t.onclick = () => { S[key] = !S[key]; t.classList.toggle("on", S[key]); save(); };
+  t.onclick = () => { S[key] = !S[key]; t.classList.toggle("on", S[key]); saveCfg(); };
   row.append(t); parent.append(row);
 }
 
@@ -544,7 +702,7 @@ function convertUnits(to) {
   const rnd = w => { const s = d.step; return Math.round(w / s) * s; };
   Object.keys(S.weights).forEach(k => { S.weights[k] = Math.max(d.bar, rnd(S.weights[k] * f)); });
   if (S.session) S.session.lifts.forEach(l => { l.weight = Math.max(d.bar, rnd(l.weight * f)); });
-  save();
+  saveCfg();
 }
 
 /* ---------- weight edit modal + plate calc ---------- */
@@ -565,12 +723,12 @@ function editWeight(key) {
     const inc = el("div", "field");
     inc.innerHTML = `<label>Add per success (progression)</label>`;
     const ii = el("input"); ii.type = "number"; ii.step = "any"; ii.value = S.inc[key]; ii.inputMode = "decimal";
-    ii.onchange = () => { const v = parseFloat(ii.value); if (!isNaN(v)) { S.inc[key] = v; save(); } };
+    ii.onchange = () => { const v = parseFloat(ii.value); if (!isNaN(v)) { S.inc[key] = v; saveCfg(); } };
     inc.append(ii); sh.append(inc);
     const acts = el("div", "actions");
     const cancel = el("button", "", "Cancel"); cancel.onclick = closeModal;
     const okb = el("button", "primary", "Set weight");
-    okb.onclick = () => { S.weights[key] = w; if (inSession) inSession.weight = w; save(); closeModal(); render(); };
+    okb.onclick = () => { S.weights[key] = w; if (inSession) inSession.weight = w; saveCfg(); closeModal(); render(); };
     acts.append(cancel, okb); sh.append(acts);
     sh.querySelector(".stepper").after(el("div", "hint", "Tap the weight buttons or edit progression. Plate hint updates live."));
   };
@@ -597,7 +755,7 @@ function renderOnboarding() {
   Object.keys(LIFTS).forEach(k => addNum(box, `${LIFTS[k].name} start`, S.weights[k], v => { S.weights[k] = v; }));
   m.append(box);
   const start = el("button", "finish", "Start lifting →");
-  start.onclick = () => { S.setup = true; save(); render(); };
+  start.onclick = () => { S.setup = true; saveCfg(); render(); };
   m.append(start);
 }
 
@@ -605,14 +763,16 @@ function renderOnboarding() {
 function openModal() { $("#modal").classList.add("open"); }
 function closeModal() { $("#modal").classList.remove("open"); $("#sheet").innerHTML = ""; }
 $("#modal").addEventListener("click", e => { if (e.target === $("#modal")) closeModal(); });
-document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => { tab = b.dataset.tab; render(); }));
+document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => { tab = b.dataset.tab; if (tab === "stats") fetchStats(); render(); }));
 $("#restMinus").onclick = () => { if (rest) { rest.endsAt = Math.max(Date.now(), rest.endsAt - 15000); rest.fired = false; $("#rest").classList.remove("done"); tickRest(); } };
 $("#restPlus").onclick = () => { if (rest) { rest.endsAt += 15000; rest.fired = false; $("#rest").classList.remove("done"); tickRest(); } };
 $("#restSkip").onclick = stopRest;
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { tickRest(); if (rest && !rest.fired) requestWake(); pullRemote().then(r => { if (r && (r.updatedAt || 0) > (S.updatedAt || 0)) { S = r; localStorage.setItem(KEY, JSON.stringify(S)); render(); } }); } });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { tickRest(); if (rest && !rest.fired) requestWake(); refresh(); } });
+window.addEventListener("online", () => { flush(); refresh(); });
+window.addEventListener("offline", syncDot);
 
 render();
-syncOnLoad();
+refresh();
 </script>
 </body>
 </html>

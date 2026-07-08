@@ -58,6 +58,7 @@ const WORKSPACE_TEMPLATE: &[(&str, &str)] = &[
     // offline, mobile-first). Seeded so a fresh install has something to open.
     ("apps/stronglifts/app.json", include_str!("../default-workspace/apps/stronglifts/app.json")),
     ("apps/stronglifts/index.html", include_str!("../default-workspace/apps/stronglifts/index.html")),
+    ("apps/stronglifts/backend/index.ts", include_str!("../default-workspace/apps/stronglifts/backend/index.ts")),
 ];
 
 // Phase 0 binds localhost only; your reverse proxy (with SSO) fronts it.
