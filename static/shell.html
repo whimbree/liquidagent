@@ -202,6 +202,25 @@
   .window.minimized { display:none !important; }
   #dock button.mini { opacity:0.4; }
 
+  /* window open animation, loading ghost, crash overlay */
+  .window { animation: winIn 0.13s ease; }
+  @keyframes winIn { from { opacity:0; transform:scale(0.975); } to { opacity:1; transform:none; } }
+  .win-loading { position:absolute; inset:2.4rem 0 0 0; display:flex; align-items:center; justify-content:center;
+                 background:var(--bg); z-index:3; }
+  .spinner { width:1.6rem; height:1.6rem; border:2px solid var(--line); border-top-color:var(--accent);
+             border-radius:50%; animation:spin 0.7s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .crash-overlay { position:absolute; inset:2.4rem 0 0 0; display:none; align-items:center; justify-content:center;
+                   background:#14141a; padding:1rem; z-index:4; }
+  .crash-overlay.show { display:flex; }
+  .crash-card { text-align:center; max-width:20rem; }
+  .crash-emoji { font-size:2.2rem; }
+  .crash-title { font-weight:500; margin:0.5rem 0; }
+  .crash-detail { font-size:0.78rem; color:#f0b0b0; background:#2a1a1a; border-radius:8px; padding:0.5rem 0.7rem;
+                  margin-bottom:0.8rem; max-height:6rem; overflow:auto; word-break:break-word; }
+  .crash-card button { margin:0.2rem; }
+  .crash-card .ghost { background:transparent; border:1px solid var(--line); color:var(--dim); }
+
   /* window switcher (Alt-Tab style) */
   #switcher { position:fixed; inset:0; z-index:90; display:none; align-items:center;
               justify-content:center; gap:0.7rem; flex-wrap:wrap; padding:2rem;
@@ -983,6 +1002,38 @@ function openApp(id, focus) {
     if (!openWindows.has(id)) return;
     persistWindow(win);
   }).observe(win);
+
+  // loading ghost + crash overlay (apps serve same-origin, so we can watch them)
+  const iframe = win.querySelector("iframe");
+  const loading = document.createElement("div");
+  loading.className = "win-loading"; loading.innerHTML = `<div class="spinner"></div>`;
+  win.appendChild(loading);
+  const crash = document.createElement("div");
+  crash.className = "crash-overlay";
+  crash.innerHTML = `<div class="crash-card"><div class="crash-emoji">💥</div>
+    <div class="crash-title">This app hit an error</div>
+    <div class="crash-detail"></div>
+    <button class="crash-fix">Ask liquid to fix it</button>
+    <button class="crash-reload ghost">Reload</button></div>`;
+  win.appendChild(crash);
+  let crashDetail = "";
+  const showCrash = (detail) => {
+    crashDetail = detail || "an unknown error";
+    crash.querySelector(".crash-detail").textContent = crashDetail;
+    crash.classList.add("show");
+  };
+  crash.querySelector(".crash-fix").onclick = () => askLiquid(`The ${app.name} app hit this error: ${crashDetail}. Please fix it.`);
+  crash.querySelector(".crash-reload").onclick = () => { crash.classList.remove("show"); iframe.src = `/app/${encodeURIComponent(id)}/`; };
+  iframe.addEventListener("load", () => {
+    if (loading.parentElement) loading.remove();
+    try {
+      const cw = iframe.contentWindow;
+      cw.addEventListener("error", (ev) => showCrash(ev.message || "a script error"));
+      cw.addEventListener("unhandledrejection", (ev) => showCrash(String((ev.reason && ev.reason.message) || ev.reason || "an error")));
+    } catch {}
+  });
+  iframe.addEventListener("error", () => { if (loading.parentElement) loading.remove(); showCrash("the app failed to load"); });
+  if (app.backend && app.backend.state === "failed") showCrash("its backend crashed — check the app’s server code");
 
   if (focus) bringToFront(win);
 }
