@@ -29,6 +29,7 @@ use crate::ws::ServerEvent;
 
 /// The shell page is embedded at compile time — no runtime path discovery.
 const SHELL_PAGE: &str = include_str!("../static/shell.html");
+const SHELL_JS: &str = include_str!("../static/shell.js");
 const APP_ICON: &str = include_str!("../static/icon.svg");
 const SERVICE_WORKER: &str = include_str!("../static/sw.js");
 const PWA_MANIFEST: &str = r##"{
@@ -212,6 +213,15 @@ async fn main() -> anyhow::Result<()> {
                         (axum::http::header::CACHE_CONTROL, "no-cache"),
                     ],
                     SERVICE_WORKER,
+                )
+            }),
+        )
+        .route(
+            "/shell.js",
+            get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/javascript")],
+                    SHELL_JS,
                 )
             }),
         )
