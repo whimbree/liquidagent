@@ -182,6 +182,13 @@
   .chatwin .chatcompose { display:flex; gap:0.5rem; padding:0.55rem 0.7rem;
                           border-top:1px solid var(--line); }
   .chatwin .chatcompose input { flex:1; min-width:0; }
+  .chatwin .titlebar .tname { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+                              font-size:0.9rem; color:#d5d5e0; }
+  .chatwin .chatconvlist { display:none; position:absolute; top:2.15rem; left:0.4rem; right:0.4rem; z-index:6;
+                           background:#1b1b24; border:1px solid #30303c; border-radius:10px; max-height:55%;
+                           overflow-y:auto; box-shadow:0 10px 30px rgba(0,0,0,0.5); }
+  .chatwin .chatconvlist.open { display:block; }
+  @media (max-width:720px) { #newwin { display:none; } }
 
   /* app context menu */
   #appmenu { position:fixed; z-index:65; min-width:12rem; background:#1b1b24;
@@ -289,6 +296,7 @@
       <b id="convtitle">New conversation</b>
       <button id="bell" title="Push notifications">🔕</button>
       <button id="newchat" title="New conversation">＋</button>
+      <button id="newwin" title="Open in a separate window">⧉</button>
       <button id="chatclose" title="Close">✕</button>
     </header>
     <div id="convlist"></div>
@@ -411,7 +419,7 @@ async function enterShell(appList) {
   try { layout = await (await api("/api/shell")).json(); } catch { layout = {}; }
   if (!layout || typeof layout !== "object") layout = {};
   if (!layout.windows) layout.windows = {};
-  if (!layout.chatWindows) layout.chatWindows = {};
+  if (!Array.isArray(layout.chatWindows)) layout.chatWindows = [];
   renderGrid();
   if (!isMobile()) {
     for (const id of Object.keys(layout.windows)) {
@@ -420,8 +428,8 @@ async function enterShell(appList) {
   }
   await loadConversations();
   if (!isMobile()) {
-    for (const cid of Object.keys(layout.chatWindows)) {
-      if (conversations.some(c => c.id === Number(cid))) openChatWindow(Number(cid));
+    for (const cw of layout.chatWindows) {
+      if (cw.id == null || conversations.some(c => c.id === cw.id)) openChatWindow(cw.id, null, cw);
     }
   }
   connect();
@@ -781,9 +789,13 @@ function renderDock() {
   dock.classList.toggle("visible", openWindows.size > 0);
 }
 
-/* ---------- chat windows: conversations as draggable desk windows ---------- */
-const chatWins = new Map();     // conversationId (or "new:N") -> window object
-const pendingNewChats = [];     // unbound chat windows awaiting a new conv id
+/* ---------- chat windows: independent, navigable chat surfaces on the desk ---------- */
+// A chat window is its own view: it shows ONE conversation at a time but can
+// switch to any (its own ☰ list). Keyed by a stable window id, not by
+// conversation — two windows may show the same chat, and a window can change
+// which chat it shows.
+const chatWins = new Map();     // windowId -> window object
+const pendingNewChats = [];     // windows that sent a new-conversation message
 let chatWinSeq = 0;
 
 // Reusable window drag (titlebar), with left/right half-screen edge snap.
@@ -823,15 +835,58 @@ function bubbleIn(logEl, cls, text, asMarkdown = false) {
   logEl.scrollTop = logEl.scrollHeight;
   return el;
 }
+function renderMsgInto(logEl, m) {
+  if (m.role === "user") bubbleIn(logEl, "user", m.content);
+  else if (m.role === "assistant") bubbleIn(logEl, "bot", m.content, true);
+  else if (m.role === "scheduled") bubbleIn(logEl, "scheduled", m.content);
+  else bubbleIn(logEl, "errmsg", m.content);
+}
 
-function persistChatWin(w) {
-  if (w.id == null) return; // unbound (no conversation yet) — nothing to remember
-  if (!layout.chatWindows) layout.chatWindows = {};
-  layout.chatWindows[w.id] = { x: w.el.offsetLeft, y: w.el.offsetTop, w: w.el.offsetWidth, h: w.el.offsetHeight };
+// Persist the open windows (which conversation each shows + geometry).
+function saveChatWins() {
+  layout.chatWindows = [...chatWins.values()].map(w => ({
+    id: w.id, x: w.el.offsetLeft, y: w.el.offsetTop, w: w.el.offsetWidth, h: w.el.offsetHeight,
+  }));
   scheduleLayoutSave();
 }
 
-// Route one streaming event into a chat window bound to that conversation.
+// Point a window at a conversation (or null for a fresh one) — same window.
+async function setConv(w, id) {
+  w.id = id; w.currentBot = null;
+  const conv = conversations.find(c => c.id === id);
+  w.title.textContent = conv ? conv.title : "New chat";
+  w.log.innerHTML = "";
+  if (id != null) {
+    const data = await (await api(`/api/conversations/${id}/messages`)).json();
+    if (w.id !== id) return; // navigated away while loading
+    for (const m of data.messages) renderMsgInto(w.log, m);
+    const pending = streams.get(id);
+    if (pending) { w.currentBot = bubbleIn(w.log, "bot", ""); w.currentBot.innerHTML = renderMarkdown(pending.raw); }
+    unread.delete(id); updateUnreadUi();
+  }
+  w.stop.hidden = !streams.has(id);
+  w.input.focus();
+  saveChatWins();
+}
+
+function renderWinConvList(w) {
+  const box = w.convlist; box.innerHTML = "";
+  if (conversations.length === 0) {
+    const none = document.createElement("div");
+    none.className = "conv"; none.style.color = "var(--dim)"; none.textContent = "No conversations yet";
+    box.appendChild(none); return;
+  }
+  for (const conv of conversations) {
+    const el = document.createElement("div");
+    el.className = "conv" + (conv.id === w.id ? " active" : "");
+    const label = document.createElement("span"); label.textContent = conv.title || "Untitled";
+    el.appendChild(label);
+    el.onclick = () => { box.classList.remove("open"); setConv(w, conv.id); };
+    box.appendChild(el);
+  }
+}
+
+// Route one streaming event into a chat window showing that conversation.
 function chatWinApply(w, ev) {
   if (w.id !== ev.conversation_id) return;
   switch (ev.type) {
@@ -849,18 +904,15 @@ function chatWinApply(w, ev) {
   }
 }
 
-async function openChatWindow(convId, pos) {
-  // Phones don't do windows: fall back to the fullscreen chat surface.
-  if (isMobile()) {
+// Open a new chat window. `convId` is what it starts on (null = a fresh chat);
+// it can navigate anywhere afterwards via its own ☰ switcher.
+async function openChatWindow(convId, pos, saved) {
+  if (isMobile()) { // phones: one fullscreen chat, no windows
     if (convId != null) await openConversation(convId);
     summonChat();
     return;
   }
-  if (convId != null && chatWins.has(convId)) { bringToFront(chatWins.get(convId).el); return; }
-
-  const key = convId != null ? convId : "new:" + (++chatWinSeq);
-  const conv = conversations.find(c => c.id === convId);
-  const saved = (layout.chatWindows && layout.chatWindows[convId]) || {};
+  saved = saved || {};
   const win = document.createElement("div");
   win.className = "window chatwin";
   const W = saved.w ?? 380, H = saved.h ?? 460;
@@ -869,10 +921,12 @@ async function openChatWindow(convId, pos) {
   win.style.cssText = `left:${x}px; top:${y}px; width:${W}px; height:${H}px; z-index:${++zCounter};`;
   win.innerHTML = `
     <div class="titlebar">
-      <span class="ticon">💬</span>
+      <button class="wconv" title="Conversations">☰</button>
       <span class="tname"></span>
+      <button class="wnew" title="New conversation">＋</button>
       <button class="close" title="Close">✕</button>
     </div>
+    <div class="chatconvlist"></div>
     <div class="chatlog"></div>
     <div class="chatstatus"></div>
     <form class="chatcompose">
@@ -882,22 +936,23 @@ async function openChatWindow(convId, pos) {
     </form>`;
   $("shell").appendChild(win);
   const w = {
-    el: win, id: convId, key,
+    el: win, wid: ++chatWinSeq, id: null, currentBot: null,
     log: win.querySelector(".chatlog"), input: win.querySelector("input"),
     send: win.querySelector(".send"), stop: win.querySelector(".stop"),
     status: win.querySelector(".chatstatus"), title: win.querySelector(".tname"),
-    currentBot: null,
+    convlist: win.querySelector(".chatconvlist"),
   };
-  w.title.textContent = conv ? conv.title : "New chat";
-  chatWins.set(key, w);
+  chatWins.set(w.wid, w);
   w.send.disabled = !(ws && ws.readyState === WebSocket.OPEN);
 
   win.addEventListener("pointerdown", () => bringToFront(win));
+  win.querySelector(".wconv").onclick = (e) => { e.stopPropagation(); renderWinConvList(w); w.convlist.classList.toggle("open"); };
+  win.querySelector(".wnew").onclick = (e) => { e.stopPropagation(); w.convlist.classList.remove("open"); setConv(w, null); };
   win.querySelector(".close").onclick = (e) => {
     e.stopPropagation();
-    win.remove(); chatWins.delete(w.key);
+    win.remove(); chatWins.delete(w.wid);
     const pi = pendingNewChats.indexOf(w); if (pi >= 0) pendingNewChats.splice(pi, 1);
-    if (w.id != null && layout.chatWindows) { delete layout.chatWindows[w.id]; scheduleLayoutSave(); }
+    saveChatWins();
   };
   win.querySelector("form").onsubmit = (e) => {
     e.preventDefault();
@@ -915,24 +970,11 @@ async function openChatWindow(convId, pos) {
       w.status.textContent = "stopping…";
     }
   };
-  enableWinDrag(win, () => persistChatWin(w));
-  new ResizeObserver(() => { if (chatWins.has(w.key)) persistChatWin(w); }).observe(win);
+  enableWinDrag(win, saveChatWins);
+  new ResizeObserver(() => { if (chatWins.has(w.wid)) saveChatWins(); }).observe(win);
 
-  if (convId != null) {
-    const data = await (await api(`/api/conversations/${convId}/messages`)).json();
-    for (const m of data.messages) {
-      if (m.role === "user") bubbleIn(w.log, "user", m.content);
-      else if (m.role === "assistant") bubbleIn(w.log, "bot", m.content, true);
-      else if (m.role === "scheduled") bubbleIn(w.log, "scheduled", m.content);
-      else bubbleIn(w.log, "errmsg", m.content);
-    }
-    const pending = streams.get(convId);
-    if (pending) { w.currentBot = bubbleIn(w.log, "bot", ""); w.currentBot.innerHTML = renderMarkdown(pending.raw); w.stop.hidden = false; }
-    unread.delete(convId); updateUnreadUi(); renderConvList();
-    persistChatWin(w);
-  }
+  await setConv(w, convId ?? null);
   bringToFront(win);
-  w.input.focus();
 }
 
 /* ---------- mobile app view ---------- */
@@ -985,11 +1027,7 @@ function renderConvList() {
       renderConvList();
     };
     el.append(label, del);
-    el.onclick = async () => {
-      $("convlist").classList.remove("open");
-      if (isMobile()) await openConversation(conv.id);
-      else openChatWindow(conv.id); // desktop: open as its own draggable window
-    };
+    el.onclick = async () => { $("convlist").classList.remove("open"); await openConversation(conv.id); };
     box.appendChild(el);
   }
 }
@@ -1033,7 +1071,8 @@ function newConversation() {
   setStreaming(false);
   $("input").focus();
 }
-$("newchat").onclick = newConversation; // new conversation in the panel; double-tap the desk for a new window
+$("newchat").onclick = newConversation; // new conversation in the panel
+$("newwin").onclick = () => { if (!isMobile()) openChatWindow(activeConversation); }; // pop out / new window
 $("convtoggle").onclick = () => { renderConvList(); $("convlist").classList.toggle("open"); };
 
 /* ---- summonable chat: double-tap the desk and liquid appears there ---- */
@@ -1166,11 +1205,9 @@ function connect() {
       // over the primary panel adopting it).
       const wnew = pendingNewChats.shift();
       if (wnew) {
-        chatWins.delete(wnew.key);
-        wnew.id = ev.conversation_id; wnew.key = ev.conversation_id;
-        chatWins.set(wnew.id, wnew);
+        wnew.id = ev.conversation_id;
         wnew.title.textContent = ev.title;
-        persistChatWin(wnew);
+        saveChatWins();
       } else if (activeConversation === null) {
         activeConversation = ev.conversation_id;
         $("convtitle").textContent = ev.title;
