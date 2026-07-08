@@ -55,6 +55,10 @@ try {
   await page.waitForFunction(() => document.getElementById("shell")!.classList.contains("active"), { timeout: 20000 });
   check("first-boot setup enters the shell", true);
 
+  // the built-in StrongLifts app is seeded and served on a fresh install
+  await page.waitForSelector(".appicon", { timeout: 8000 });
+  check("the built-in StrongLifts app ships and appears", (await page.$$eval(".appicon .label", (els) => els.map((e) => e.textContent))).some((l) => /StrongLifts/.test(l || "")));
+
   // agent grows an app -> icon lands (commit + a fake reply claims file tools -> deploy)
   const dir = join(WS, "apps", "board");
   mkdirSync(dir, { recursive: true });
@@ -64,12 +68,14 @@ try {
   await page.click("#chatfab");
   await page.waitForFunction(() => !(document.getElementById("send") as HTMLButtonElement).disabled, { timeout: 12000 });
   await page.type("#input", "make it"); await page.click("#send");
-  await page.waitForSelector(".appicon", { timeout: 20000 });
+  // wait for THIS app specifically (a fresh install also seeds the built-in
+  // StrongLifts app, so ".appicon" alone isn't enough).
+  await page.waitForFunction(() => [...document.querySelectorAll(".appicon")].some((e) => (e as HTMLElement).dataset.id === "board"), { timeout: 20000 });
   await page.click("#chatclose");
   check("an app the agent built appears on the home screen", true);
 
   // open it -> window; minimize -> dock -> restore; maximize
-  await page.click(".appicon");
+  await page.evaluate(() => (document.querySelector('.appicon[data-id="board"]') as HTMLElement).click());
   await page.waitForSelector(".window:not(.chatwin)", { timeout: 5000 });
   const openWidth = await page.$eval(".window:not(.chatwin)", (el) => (el as HTMLElement).offsetWidth);
   check("window opens at the app's declared width (not the default)", openWidth > 340 && openWidth < 400);

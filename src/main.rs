@@ -54,6 +54,10 @@ const WORKSPACE_TEMPLATE: &[(&str, &str)] = &[
     (".gitignore", include_str!("../default-workspace/.gitignore")),
     ("PULSE.json", include_str!("../default-workspace/PULSE.json")),
     ("CRONS.json", include_str!("../default-workspace/CRONS.json")),
+    // A real, useful app shipped built-in: a StrongLifts 5×5 tracker (buildless,
+    // offline, mobile-first). Seeded so a fresh install has something to open.
+    ("apps/stronglifts/app.json", include_str!("../default-workspace/apps/stronglifts/app.json")),
+    ("apps/stronglifts/index.html", include_str!("../default-workspace/apps/stronglifts/index.html")),
 ];
 
 // Phase 0 binds localhost only; your reverse proxy (with SSO) fronts it.
@@ -574,7 +578,12 @@ fn init_workspace(dir: &Path) -> anyhow::Result<()> {
         std::fs::create_dir_all(dir.join("memory"))
             .with_context(|| format!("creating {}", dir.display()))?;
         for (name, contents) in WORKSPACE_TEMPLATE {
-            std::fs::write(dir.join(name), contents)
+            let path = dir.join(name);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)
+                    .with_context(|| format!("creating dir for {name}"))?;
+            }
+            std::fs::write(&path, contents)
                 .with_context(|| format!("seeding {name}"))?;
         }
         info!("created workspace at {} from template", dir.display());
