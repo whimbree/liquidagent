@@ -207,6 +207,32 @@
   .switch-tile .slabel { font-size:0.75rem; color:#c9c9d4; max-width:6rem; overflow:hidden;
                          text-overflow:ellipsis; white-space:nowrap; }
 
+  /* folders */
+  .folder { display:flex; flex-direction:column; align-items:center; gap:0.45rem; padding:0.5rem 0.3rem;
+            border-radius:14px; cursor:pointer; }
+  .folder:hover { background:#ffffff0d; }
+  .folder-glyph { width:3.6rem; height:3.6rem; border-radius:16px; background:var(--panel);
+                  border:1px solid var(--line); display:grid; grid-template-columns:1fr 1fr; gap:2px;
+                  padding:6px; box-sizing:border-box; }
+  .folder-glyph span { display:flex; align-items:center; justify-content:center; font-size:1rem; overflow:hidden; }
+  .folder .label { font-size:0.78rem; color:#c9c9d4; text-align:center; max-width:6.4rem; overflow:hidden;
+                   text-overflow:ellipsis; white-space:nowrap; }
+  .appicon.combine-target .glyph, .folder.combine-target .folder-glyph { outline:2px solid var(--accent); outline-offset:2px; }
+  #folder-view { position:fixed; inset:0; z-index:78; display:none; align-items:center; justify-content:center;
+                 background:rgba(0,0,0,0.5); padding:1rem; }
+  #folder-view.open { display:flex; }
+  .fv-card { width:min(30rem,100%); max-height:80dvh; overflow-y:auto; background:var(--panel);
+             border:1px solid var(--line); border-radius:16px; padding:0.3rem 0.7rem 1rem; }
+  .fv-card header { display:flex; align-items:center; gap:0.5rem; padding:0.6rem 0.3rem; }
+  #fv-name { flex:1; background:transparent; border:0; border-bottom:1px solid transparent; color:inherit;
+             font-size:1rem; padding:0.2rem; }
+  #fv-name:focus { border-bottom-color:var(--line); outline:none; }
+  .fv-card header button { background:transparent; color:var(--dim); }
+  #fv-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(5rem,1fr)); gap:0.9rem; padding:0.5rem; }
+  #fv-grid .appicon { position:relative; }
+  .fv-remove { position:absolute; top:-0.3rem; right:0.3rem; background:#2a2a36; color:#f0a0a0; width:1.3rem;
+               height:1.3rem; border-radius:50%; padding:0; font-size:0.7rem; line-height:1; }
+
   /* app context menu */
   #appmenu { position:fixed; z-index:65; min-width:12rem; background:#1b1b24;
              border:1px solid #30303c; border-radius:10px; padding:0.25rem;
@@ -334,6 +360,10 @@
   <div id="appmenu"></div>
   <div id="toast"></div>
   <div id="switcher"></div>
+  <div id="folder-view"><div class="fv-card">
+    <header><input id="fv-name" placeholder="Folder"><button id="fv-close" title="Close">✕</button></header>
+    <div id="fv-grid"></div>
+  </div></div>
 
   <button id="settingsbtn" title="Settings">⚙</button>
   <div id="panelbg">
@@ -584,65 +614,137 @@ function updateBusyIndicator() {
   else { el.classList.remove("show"); }
 }
 
-// Apps in the user's arranged order (layout.iconOrder); unknown/new apps append.
-function orderedApps() {
+/* ---------- home grid: icons, reorder, and folders (SHELL.json metadata) ---------- */
+// Folders are pure shell metadata; apps stay flat on disk. layout.folders maps
+// folderId -> { name, apps:[appId] }; layout.iconOrder is a list of tokens
+// (an appId, or "f:"+folderId) giving the grid arrangement.
+function folders() { return layout.folders || (layout.folders = {}); }
+function appFolder(id) { for (const [fid, f] of Object.entries(folders())) if (f.apps.includes(id)) return fid; return null; }
+function newFolderId() { return "fld" + Math.random().toString(36).slice(2, 8); }
+function pruneFolders() { for (const [fid, f] of Object.entries(folders())) if (!f.apps || f.apps.length === 0) delete folders()[fid]; }
+
+function orderedItems() {
+  pruneFolders();
   const order = layout.iconOrder || [];
-  const byId = new Map(apps.map(a => [a.id, a]));
-  const result = [];
-  for (const id of order) if (byId.has(id)) { result.push(byId.get(id)); byId.delete(id); }
-  for (const a of byId.values()) result.push(a);
-  return result;
+  const fids = new Set(Object.keys(folders()));
+  const loose = new Set(apps.map(a => a.id).filter(id => !appFolder(id)));
+  const items = [], seen = new Set();
+  for (const tok of order) {
+    if (typeof tok !== "string") continue;
+    if (tok.startsWith("f:")) { const fid = tok.slice(2); if (fids.has(fid) && !seen.has(tok)) { items.push({ kind: "folder", id: fid }); seen.add(tok); } }
+    else if (loose.has(tok) && !seen.has(tok)) { items.push({ kind: "app", id: tok }); seen.add(tok); }
+  }
+  for (const fid of fids) if (!seen.has("f:" + fid)) items.push({ kind: "folder", id: fid });
+  for (const id of loose) if (!seen.has(id)) items.push({ kind: "app", id });
+  return items;
 }
 function saveIconOrder() {
-  layout.iconOrder = [...$("grid").querySelectorAll(".appicon")].map(el => el.dataset.id);
+  layout.iconOrder = [...$("grid").children].map(el => el.dataset.kind === "folder" ? "f:" + el.dataset.id : el.dataset.id);
   scheduleLayoutSave();
 }
+
+function makeAppIcon(app) {
+  const el = document.createElement("div");
+  el.className = "appicon"; el.dataset.kind = "app"; el.dataset.id = app.id; el.draggable = true;
+  const failed = app.backend && app.backend.state === "failed";
+  el.innerHTML = `<div class="glyph">${escapeHtml(app.icon)}${failed ? '<span class="badge">⚠️</span>' : ""}</div>
+                  <div class="label">${escapeHtml(app.name)}</div>`;
+  el.title = failed ? `${app.name} — its backend crashed; ask liquid to fix it` : (app.description || app.name);
+  el.onclick = () => openApp(app.id, true);
+  el.addEventListener("dragstart", () => el.classList.add("dragging"));
+  el.addEventListener("dragend", () => { el.classList.remove("dragging"); dropItem(el); });
+  el.oncontextmenu = (e) => { e.preventDefault(); showAppMenu(app, e.clientX, e.clientY); };
+  let pressTimer = null;
+  el.addEventListener("touchstart", (e) => { pressTimer = setTimeout(() => { pressTimer = null; const t = e.touches[0]; showAppMenu(app, t.clientX, t.clientY); }, 550); }, { passive: true });
+  el.addEventListener("touchend", () => { if (pressTimer) clearTimeout(pressTimer); });
+  el.addEventListener("touchmove", () => { if (pressTimer) clearTimeout(pressTimer); });
+  return el;
+}
+function makeFolderIcon(fid) {
+  const f = folders()[fid];
+  const el = document.createElement("div");
+  el.className = "folder"; el.dataset.kind = "folder"; el.dataset.id = fid; el.draggable = true;
+  const minis = f.apps.slice(0, 4).map(id => { const a = apps.find(x => x.id === id); return `<span>${a ? escapeHtml(a.icon) : ""}</span>`; }).join("");
+  el.innerHTML = `<div class="folder-glyph">${minis}</div><div class="label">${escapeHtml(f.name || "Folder")}</div>`;
+  el.onclick = () => openFolder(fid);
+  el.addEventListener("dragstart", () => el.classList.add("dragging"));
+  el.addEventListener("dragend", () => { el.classList.remove("dragging"); dropItem(el); });
+  return el;
+}
 function renderGrid() {
-  const grid = $("grid");
-  grid.innerHTML = "";
-  for (const app of orderedApps()) {
-    const el = document.createElement("div");
-    el.className = "appicon";
-    el.dataset.id = app.id;
-    el.draggable = true;
-    const failed = app.backend && app.backend.state === "failed";
-    el.innerHTML = `<div class="glyph">${escapeHtml(app.icon)}${failed ? '<span class="badge">⚠️</span>' : ""}</div>
-                    <div class="label">${escapeHtml(app.name)}</div>`;
-    el.title = failed
-      ? `${app.name} — its backend crashed; ask liquid to fix it`
-      : (app.description || app.name);
-    el.onclick = () => openApp(app.id, true);
-    el.addEventListener("dragstart", () => el.classList.add("dragging"));
-    el.addEventListener("dragend", () => { el.classList.remove("dragging"); saveIconOrder(); });
-    el.oncontextmenu = (e) => { e.preventDefault(); showAppMenu(app, e.clientX, e.clientY); };
-    // long-press = context menu on touch
-    let pressTimer = null;
-    el.addEventListener("touchstart", (e) => {
-      pressTimer = setTimeout(() => {
-        pressTimer = null;
-        const t = e.touches[0];
-        showAppMenu(app, t.clientX, t.clientY);
-      }, 550);
-    }, { passive: true });
-    el.addEventListener("touchend", () => { if (pressTimer) clearTimeout(pressTimer); });
-    el.addEventListener("touchmove", () => { if (pressTimer) clearTimeout(pressTimer); });
-    grid.appendChild(el);
-  }
+  const grid = $("grid"); grid.innerHTML = "";
+  for (const item of orderedItems()) grid.appendChild(item.kind === "app" ? makeAppIcon(apps.find(a => a.id === item.id)) : makeFolderIcon(item.id));
   $("empty").hidden = apps.length > 0;
 }
-// Live-reorder icons while dragging (desktop); order is saved on dragend.
+
+// Drag: reorder in free space, or drop an app onto another app/folder to group.
+let combineTarget = null;
+function clearCombine() { if (combineTarget) { combineTarget.classList.remove("combine-target"); combineTarget = null; } }
 $("grid").addEventListener("dragover", (e) => {
   e.preventDefault();
-  const dragging = $("grid").querySelector(".appicon.dragging");
+  const dragging = $("grid").querySelector(".dragging");
   if (!dragging) return;
+  clearCombine();
+  if (dragging.dataset.kind === "app") { // only apps combine (no nested folders)
+    const over = document.elementFromPoint(e.clientX, e.clientY)?.closest(".appicon, .folder");
+    if (over && over !== dragging) {
+      const r = over.getBoundingClientRect();
+      const centered = e.clientX > r.left + r.width * 0.28 && e.clientX < r.right - r.width * 0.28
+                    && e.clientY > r.top + r.height * 0.28 && e.clientY < r.bottom - r.height * 0.28;
+      if (centered) { combineTarget = over; over.classList.add("combine-target"); return; }
+    }
+  }
   let ref = null;
-  for (const el of $("grid").querySelectorAll(".appicon:not(.dragging)")) {
+  for (const el of $("grid").querySelectorAll(".appicon:not(.dragging), .folder:not(.dragging)")) {
     const r = el.getBoundingClientRect();
     const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
     if (e.clientY < cy - r.height / 2 || (Math.abs(e.clientY - cy) <= r.height / 2 && e.clientX < cx)) { ref = el; break; }
   }
   if (ref) $("grid").insertBefore(dragging, ref); else $("grid").appendChild(dragging);
 });
+function dropItem(el) {
+  if (combineTarget && el.dataset.kind === "app") {
+    const appId = el.dataset.id, target = combineTarget;
+    clearCombine();
+    if (target.dataset.kind === "folder") folders()[target.dataset.id].apps.push(appId);
+    else { const fid = newFolderId(); folders()[fid] = { name: "Folder", apps: [target.dataset.id, appId] }; }
+    renderGrid(); saveIconOrder();
+    return;
+  }
+  clearCombine();
+  saveIconOrder();
+}
+
+/* ---------- folder view ---------- */
+function openFolder(fid) {
+  const f = folders()[fid]; if (!f) return;
+  $("fv-name").value = f.name || "Folder"; $("fv-name").dataset.fid = fid;
+  const g = $("fv-grid"); g.innerHTML = "";
+  for (const id of f.apps) {
+    const a = apps.find(x => x.id === id); if (!a) continue;
+    const el = document.createElement("div"); el.className = "appicon";
+    el.innerHTML = `<div class="glyph">${escapeHtml(a.icon)}</div><div class="label">${escapeHtml(a.name)}</div>
+                    <button class="fv-remove" title="Remove from folder">✕</button>`;
+    el.querySelector(".glyph").onclick = () => { closeFolder(); openApp(a.id, true); };
+    el.querySelector(".fv-remove").onclick = (e) => { e.stopPropagation(); removeFromFolder(fid, a.id); };
+    g.appendChild(el);
+  }
+  $("folder-view").classList.add("open");
+}
+function closeFolder() { $("folder-view").classList.remove("open"); }
+function removeFromFolder(fid, appId) {
+  const f = folders()[fid]; if (!f) return;
+  f.apps = f.apps.filter(x => x !== appId);
+  scheduleLayoutSave();
+  renderGrid();
+  if (f.apps.length === 0) closeFolder(); else openFolder(fid);
+}
+$("fv-name").onchange = () => {
+  const fid = $("fv-name").dataset.fid;
+  if (folders()[fid]) { folders()[fid].name = $("fv-name").value.trim() || "Folder"; scheduleLayoutSave(); renderGrid(); }
+};
+$("fv-close").onclick = closeFolder;
+$("folder-view").onclick = (e) => { if (e.target === $("folder-view")) closeFolder(); };
 
 /* ---- app context menu: lifecycle actions are conversations ---- */
 function askLiquid(prefill) {
