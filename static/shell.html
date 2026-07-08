@@ -268,6 +268,10 @@
   .setting-section .msg { font-size:0.82rem; min-height:1.1em; }
   .setting-section .msg.ok { color:#8fd0a0; }
   .setting-section .msg.err { color:#f0a0a0; }
+  .setting-section label.hint { display:block; margin:0.6rem 0 0.2rem; }
+  .swatches { display:flex; gap:0.5rem; margin-top:0.6rem; }
+  .swatches button { width:1.7rem; height:1.7rem; border-radius:50%; border:2px solid transparent; padding:0; }
+  .swatches button.sel { border-color:#fff; }
 </style>
 </head>
 <body>
@@ -335,6 +339,20 @@
   <div id="panelbg">
     <div id="panel">
       <header><b>Settings</b><button id="panelclose" title="Close">✕</button></header>
+      <div class="setting-section">
+        <h3>Appearance</h3>
+        <p class="hint">Theme your desk. (liquid can rearrange it too — it’s just shell state.)</p>
+        <label class="hint" for="wallpaper-select">Wallpaper</label>
+        <select id="wallpaper-select">
+          <option value="midnight">Midnight</option>
+          <option value="slate">Slate</option>
+          <option value="aurora">Aurora</option>
+          <option value="dusk">Dusk</option>
+          <option value="forest">Forest</option>
+        </select>
+        <label class="hint">Accent</label>
+        <div id="accent-swatches" class="swatches"></div>
+      </div>
       <div class="setting-section">
         <h3>Agent</h3>
         <p class="hint">Which model liquid uses to build and reason. “Default” follows your Claude plan; the change applies to your next message.</p>
@@ -438,6 +456,7 @@ async function enterShell(appList) {
   if (!layout || typeof layout !== "object") layout = {};
   if (!layout.windows) layout.windows = {};
   if (!Array.isArray(layout.chatWindows)) layout.chatWindows = [];
+  applyAppearance();
   renderGrid();
   if (!isMobile()) {
     for (const id of Object.keys(layout.windows)) {
@@ -565,12 +584,27 @@ function updateBusyIndicator() {
   else { el.classList.remove("show"); }
 }
 
+// Apps in the user's arranged order (layout.iconOrder); unknown/new apps append.
+function orderedApps() {
+  const order = layout.iconOrder || [];
+  const byId = new Map(apps.map(a => [a.id, a]));
+  const result = [];
+  for (const id of order) if (byId.has(id)) { result.push(byId.get(id)); byId.delete(id); }
+  for (const a of byId.values()) result.push(a);
+  return result;
+}
+function saveIconOrder() {
+  layout.iconOrder = [...$("grid").querySelectorAll(".appicon")].map(el => el.dataset.id);
+  scheduleLayoutSave();
+}
 function renderGrid() {
   const grid = $("grid");
   grid.innerHTML = "";
-  for (const app of apps) {
+  for (const app of orderedApps()) {
     const el = document.createElement("div");
     el.className = "appicon";
+    el.dataset.id = app.id;
+    el.draggable = true;
     const failed = app.backend && app.backend.state === "failed";
     el.innerHTML = `<div class="glyph">${escapeHtml(app.icon)}${failed ? '<span class="badge">⚠️</span>' : ""}</div>
                     <div class="label">${escapeHtml(app.name)}</div>`;
@@ -578,6 +612,8 @@ function renderGrid() {
       ? `${app.name} — its backend crashed; ask liquid to fix it`
       : (app.description || app.name);
     el.onclick = () => openApp(app.id, true);
+    el.addEventListener("dragstart", () => el.classList.add("dragging"));
+    el.addEventListener("dragend", () => { el.classList.remove("dragging"); saveIconOrder(); });
     el.oncontextmenu = (e) => { e.preventDefault(); showAppMenu(app, e.clientX, e.clientY); };
     // long-press = context menu on touch
     let pressTimer = null;
@@ -594,6 +630,19 @@ function renderGrid() {
   }
   $("empty").hidden = apps.length > 0;
 }
+// Live-reorder icons while dragging (desktop); order is saved on dragend.
+$("grid").addEventListener("dragover", (e) => {
+  e.preventDefault();
+  const dragging = $("grid").querySelector(".appicon.dragging");
+  if (!dragging) return;
+  let ref = null;
+  for (const el of $("grid").querySelectorAll(".appicon:not(.dragging)")) {
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    if (e.clientY < cy - r.height / 2 || (Math.abs(e.clientY - cy) <= r.height / 2 && e.clientX < cx)) { ref = el; break; }
+  }
+  if (ref) $("grid").insertBefore(dragging, ref); else $("grid").appendChild(dragging);
+});
 
 /* ---- app context menu: lifecycle actions are conversations ---- */
 function askLiquid(prefill) {
@@ -1389,8 +1438,39 @@ $("composer").onsubmit = (e) => {
 };
 
 /* ---------- settings / control panel ---------- */
+const WALLPAPERS = {
+  midnight: "#101014", slate: "#15151c",
+  aurora: "linear-gradient(160deg,#0f1020,#161a2e 60%,#1a2233)",
+  dusk: "linear-gradient(160deg,#141018,#1e1622 60%,#241a26)",
+  forest: "linear-gradient(160deg,#0e1512,#12201a)",
+};
+const ACCENTS = ["#3d5296", "#7a5cc0", "#3f8f6b", "#b5683e", "#b03e5e", "#3f7fb0"];
+function applyAppearance() {
+  const a = layout.appearance || {};
+  document.documentElement.style.setProperty("--accent", a.accent || "#3d5296");
+  document.body.style.background = WALLPAPERS[a.wallpaper] || WALLPAPERS.midnight;
+}
+function initAppearanceControls() {
+  const cur = layout.appearance || {};
+  const box = $("accent-swatches"); box.innerHTML = "";
+  for (const c of ACCENTS) {
+    const b = document.createElement("button");
+    b.style.background = c;
+    if ((cur.accent || "#3d5296") === c) b.classList.add("sel");
+    b.onclick = () => setAppearance({ accent: c });
+    box.appendChild(b);
+  }
+  $("wallpaper-select").value = cur.wallpaper || "midnight";
+}
+function setAppearance(patch) {
+  layout.appearance = Object.assign({}, layout.appearance, patch);
+  applyAppearance(); scheduleLayoutSave(); initAppearanceControls();
+}
+$("wallpaper-select").onchange = () => setAppearance({ wallpaper: $("wallpaper-select").value });
+
 async function loadSettings() {
   const m = $("model-msg"); m.textContent = ""; m.className = "msg";
+  initAppearanceControls();
   try {
     const s = await (await api("/api/settings")).json();
     $("model-select").value = s.model || "default";
