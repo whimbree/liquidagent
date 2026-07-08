@@ -281,6 +281,25 @@
                  display:flex; align-items:center; justify-content:center; padding:0; font-size:0.95rem;
                  border-radius:999px; background:#1c1c26; color:var(--dim); border:1px solid var(--line); }
   #settingsbtn:hover { color:#c9c9d4; }
+  #tray-btn { position:fixed; top:0.7rem; left:3.1rem; z-index:30; width:1.9rem; height:1.9rem;
+              display:flex; align-items:center; justify-content:center; padding:0; font-size:0.9rem;
+              border-radius:999px; background:#1c1c26; color:var(--dim); border:1px solid var(--line); }
+  #tray-btn:hover { color:#c9c9d4; }
+  #tray-btn.has-unseen::after { content:attr(data-count); position:absolute; top:-0.3rem; right:-0.3rem;
+              background:#e0645c; color:#fff; font-size:0.58rem; min-width:1rem; height:1rem; border-radius:999px;
+              display:flex; align-items:center; justify-content:center; padding:0 0.2rem; }
+  #tray-panel { position:fixed; top:2.9rem; left:0.9rem; width:min(20rem,90vw); max-height:60vh; overflow-y:auto;
+              z-index:66; background:#1b1b24; border:1px solid var(--line); border-radius:12px;
+              box-shadow:0 12px 34px rgba(0,0,0,0.6); display:none; }
+  #tray-panel.open { display:block; }
+  #tray-panel header { padding:0.55rem 0.8rem; border-bottom:1px solid var(--line); font-size:0.78rem;
+              color:var(--dim); display:flex; align-items:center; justify-content:space-between; }
+  #tray-clear { background:transparent; color:var(--dim); font-size:0.72rem; padding:0.1rem 0.4rem; }
+  .tray-item { padding:0.55rem 0.8rem; border-bottom:1px solid #23232e; }
+  .tray-title { font-size:0.85rem; }
+  .tray-body { font-size:0.78rem; color:#b8b8c4; margin-top:0.15rem; }
+  .tray-time { font-size:0.6rem; color:var(--dim); margin-top:0.25rem; }
+  .tray-empty { padding:1rem; color:var(--dim); font-size:0.85rem; text-align:center; }
   #panelbg { position:fixed; inset:0; z-index:80; background:rgba(0,0,0,0.55); padding:1rem;
              display:none; align-items:center; justify-content:center; }
   #panelbg.open { display:flex; }
@@ -375,6 +394,11 @@
   </div></div>
 
   <button id="settingsbtn" title="Settings">⚙</button>
+  <button id="tray-btn" title="Notifications">🔔</button>
+  <div id="tray-panel">
+    <header><span>Notifications</span><button id="tray-clear">Clear</button></header>
+    <div id="tray-list"></div>
+  </div>
   <div id="panelbg">
     <div id="panel">
       <header><b>Settings</b><button id="panelclose" title="Close">✕</button></header>
@@ -496,6 +520,7 @@ async function enterShell(appList) {
   if (!layout.windows) layout.windows = {};
   if (!Array.isArray(layout.chatWindows)) layout.chatWindows = [];
   applyAppearance();
+  loadNotifs(); updateTrayBadge();
   renderGrid();
   if (!isMobile()) {
     for (const id of Object.keys(layout.windows)) {
@@ -817,6 +842,43 @@ function toast(text) {
   clearTimeout(el._t);
   el._t = setTimeout(() => el.classList.remove("show"), 3200);
 }
+
+/* ---------- notification tray (in-shell history; distinct from OS push) ---------- */
+let notifications = [];
+let unseenNotifs = 0;
+function loadNotifs() { try { notifications = JSON.parse(localStorage.getItem("liquid_notifs") || "[]"); } catch { notifications = []; } }
+function saveNotifs() { localStorage.setItem("liquid_notifs", JSON.stringify(notifications.slice(0, 50))); }
+function updateTrayBadge() {
+  const b = $("tray-btn");
+  b.dataset.count = unseenNotifs > 99 ? "99+" : String(unseenNotifs);
+  b.classList.toggle("has-unseen", unseenNotifs > 0);
+}
+function addNotification(title, body) {
+  notifications.unshift({ title, body: body || "", ts: Date.now() / 1000 });
+  notifications = notifications.slice(0, 50);
+  saveNotifs();
+  unseenNotifs++; updateTrayBadge();
+  if ($("tray-panel").classList.contains("open")) renderTray();
+}
+function renderTray() {
+  const list = $("tray-list"); list.innerHTML = "";
+  if (notifications.length === 0) { list.innerHTML = `<div class="tray-empty">No notifications yet.</div>`; return; }
+  for (const n of notifications) {
+    const el = document.createElement("div"); el.className = "tray-item";
+    el.innerHTML = `<div class="tray-title">${escapeHtml(n.title)}</div>` +
+      (n.body ? `<div class="tray-body">${escapeHtml(n.body)}</div>` : "") +
+      `<div class="tray-time">${new Date(n.ts * 1000).toLocaleString()}</div>`;
+    list.appendChild(el);
+  }
+}
+$("tray-btn").onclick = () => {
+  const open = $("tray-panel").classList.toggle("open");
+  if (open) { unseenNotifs = 0; updateTrayBadge(); renderTray(); }
+};
+$("tray-clear").onclick = () => { notifications = []; saveNotifs(); renderTray(); };
+addEventListener("pointerdown", (e) => {
+  if (!e.target.closest("#tray-panel") && !e.target.closest("#tray-btn")) $("tray-panel").classList.remove("open");
+});
 
 /* ---------- windows ---------- */
 let saveTimer = null;
@@ -1449,7 +1511,7 @@ function connect() {
       apps = ev.apps;
       renderGrid();
       const fresh = apps.filter(a => !before.has(a.id));
-      for (const app of fresh) toast(`${app.icon} ${app.name} is on your home screen`);
+      for (const app of fresh) { toast(`${app.icon} ${app.name} is on your home screen`); addNotification(`${app.icon} ${app.name}`, "Added to your home screen"); }
       // drop windows of apps that no longer exist
       for (const [id, win] of openWindows) {
         if (!apps.some(a => a.id === id)) { win.remove(); openWindows.delete(id); }
@@ -1466,6 +1528,7 @@ function connect() {
     }
     if (ev.type === "notify") {
       toast(`🔔 ${ev.title}: ${ev.body}`);
+      addNotification(ev.title, ev.body);
       return;
     }
     if (ev.type === "pipeline") {
