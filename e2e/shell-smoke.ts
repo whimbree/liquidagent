@@ -1,0 +1,112 @@
+/**
+ * Permanent shell regression guard. Boots a real supervisor with the offline
+ * fake harness, then drives the actual shell in headless chromium — login,
+ * deploy an app, window-manager basics, a chat window with streaming, and the
+ * command palette. This is the committed counterpart to e2e/smoke.ts (which
+ * guards the HTTP/WS API); together they cover backend + shell.
+ *
+ *   nix develop --command bun run e2e/shell-smoke.ts
+ *
+ * Fake harness only — no credentials, no model, deterministic. puppeteer-core is
+ * bun-auto-installed on first run; chromium comes from the dev shell (PATH) or
+ * $LIQUID_CHROME.
+ */
+import puppeteer from "puppeteer-core";
+import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { spawn, execSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const PORT = 3190;
+const BASE = `http://127.0.0.1:${PORT}`;
+const REPO = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
+const root = join(tmpdir(), `liquid-shell-e2e-${process.pid}`);
+const WS = join(root, "workspace");
+const PASSWORD = "shell-smoke-password";
+const CHROME = process.env.LIQUID_CHROME ?? Bun.which("chromium") ?? "/run/current-system/sw/bin/chromium";
+
+let failures = 0;
+function check(name: string, pass: boolean) {
+  console.log(`${pass ? "  ✓" : "  ✗"} ${name}`);
+  if (!pass) failures++;
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const git = (a: string) => execSync(`git ${a}`, { cwd: WS }).toString();
+
+mkdirSync(root, { recursive: true });
+console.log("booting supervisor (fake harness) + chromium…");
+const server = spawn("cargo", ["run", "--quiet"], {
+  cwd: REPO,
+  env: { ...process.env, LIQUID_FAKE_AGENT: "1", LIQUID_PORT: String(PORT), LIQUID_WORKSPACE_DIR: WS, LIQUID_DATA_DIR: join(root, "data") },
+  stdio: ["ignore", "ignore", "inherit"],
+});
+const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1200,800"] });
+try {
+  for (let i = 0; i < 220; i++) { try { if ((await fetch(BASE + "/api/health")).ok) break; } catch {} await sleep(400); }
+  const page = await browser.newPage();
+  await page.setViewport({ width: 1200, height: 800 });
+  const errs: string[] = [];
+  page.on("pageerror", (e) => errs.push(e.message));
+
+  // first-boot setup -> shell
+  await page.goto(BASE, { waitUntil: "networkidle0" });
+  await page.type("#password", PASSWORD);
+  await page.click("#login-form button");
+  await page.waitForFunction(() => document.getElementById("shell")!.classList.contains("active"), { timeout: 20000 });
+  check("first-boot setup enters the shell", true);
+
+  // agent grows an app -> icon lands (commit + a fake reply claims file tools -> deploy)
+  const dir = join(WS, "apps", "board");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "app.json"), JSON.stringify({ name: "Board", icon: "📋", description: "smoke" }));
+  writeFileSync(join(dir, "index.html"), "<!doctype html><h1>board</h1>");
+  git("add -A"); git('commit -q -m "add board"');
+  await page.click("#chatfab");
+  await page.waitForFunction(() => !(document.getElementById("send") as HTMLButtonElement).disabled, { timeout: 12000 });
+  await page.type("#input", "make it"); await page.click("#send");
+  await page.waitForSelector(".appicon", { timeout: 20000 });
+  await page.click("#chatclose");
+  check("an app the agent built appears on the home screen", true);
+
+  // open it -> window; minimize -> dock -> restore; maximize
+  await page.click(".appicon");
+  await page.waitForSelector(".window:not(.chatwin)", { timeout: 5000 });
+  await page.click(".window:not(.chatwin) .titlebar .min");
+  await page.waitForFunction(() => document.querySelector(".window:not(.chatwin)")!.classList.contains("minimized"), { timeout: 3000 });
+  check("app opens as a window and minimizes to the dock", (await page.$$("#dock button")).length === 1);
+  await page.click("#dock button");
+  await page.waitForFunction(() => !document.querySelector(".window:not(.chatwin)")!.classList.contains("minimized"), { timeout: 3000 });
+  await page.click(".window:not(.chatwin) .titlebar .max");
+  await page.waitForFunction(() => document.querySelector(".window:not(.chatwin)")!.classList.contains("maximized"), { timeout: 3000 });
+  check("dock restores it and the maximize button works", true);
+  await page.click(".window:not(.chatwin) .titlebar .min"); // stash it so the desk is clear
+  await sleep(150);
+
+  // a chat window on the desk, with streaming
+  await page.evaluate(() => document.elementFromPoint(600, 400)!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, clientX: 600, clientY: 400 })));
+  await page.waitForSelector(".chatwin", { timeout: 4000 });
+  await page.$eval(".chatwin", (w) => {
+    (w.querySelector("input") as HTMLInputElement).value = "hello from the smoke test";
+    (w.querySelector("form") as HTMLFormElement).requestSubmit();
+  });
+  await page.waitForFunction(() => /fake harness/i.test(document.querySelector(".chatwin .msg.bot .mbody")?.textContent || ""), { timeout: 15000 });
+  check("a chat window opens and streams a reply", true);
+
+  // command palette
+  await page.keyboard.down("Control"); await page.keyboard.press("k"); await page.keyboard.up("Control");
+  await page.waitForFunction(() => document.getElementById("palette")!.classList.contains("open"), { timeout: 3000 });
+  await page.type("#palette-input", "board");
+  await page.waitForFunction(() => /Open Board/.test(document.querySelector("#palette-results .pal-item.sel")?.textContent || ""), { timeout: 3000 });
+  check("the command palette opens and finds the app", true);
+  await page.keyboard.press("Escape");
+
+  check("no page errors", errs.length === 0);
+  if (errs.length) console.log("  errors:", errs.slice(0, 4));
+} finally {
+  await browser.close();
+  server.kill("SIGTERM");
+  await sleep(500);
+  rmSync(root, { recursive: true, force: true });
+}
+console.log(failures === 0 ? "\nSHELL SMOKE PASS" : `\nSHELL SMOKE FAIL (${failures})`);
+process.exit(failures === 0 ? 0 : 1);

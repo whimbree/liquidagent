@@ -93,23 +93,27 @@ LIQUID_FAKE_AGENT=1 cargo run     # http://localhost:3000
 # real agent (needs Claude Code creds or ANTHROPIC_API_KEY)
 cargo run
 
+nix develop --command bash check.sh   # THE gate: all of the below in one shot
 cargo test                        # Rust unit tests (in-memory DB, no network)
-cd workspace/agent && bun test    # IPC + prompt tests
-bun run e2e/smoke.ts              # full-stack smoke: boots a fake-harness
-                                  # supervisor, exercises auth/apps/KV/traversal/
-                                  # pipeline(reject+override+approve)/graduation/
-                                  # persistence, tears down. No credentials, CI-safe.
+cd workspace/agent && bun test    # IPC + prompt + wire-parity tests
+cd workspace/agent && bun run typecheck        # harness (tsc --noEmit)
+cd workspace/agent && bun run typecheck:shell  # shell (checkJs on static/shell.js)
+bun run e2e/smoke.ts              # API smoke: auth/apps/KV/traversal/pipeline/
+                                  # graduation/persistence. No credentials, CI-safe.
+bun run e2e/shell-smoke.ts        # shell smoke: drives the real shell in headless
+                                  # chromium (login/app-window/WM/chat/palette).
 nix build .#checks.x86_64-linux.module-boots   # boots the NixOS module in a VM
 ```
 
-`e2e/smoke.ts` is the checked-in regression guard (fake harness, deterministic).
-Beyond it, milestone flows were verified by driving the real agent and the shell
-in headless chromium (`puppeteer-core`) from throwaway scripts. The pattern that
-repeatedly paid off — and caught real bugs unit tests missed (a 10s scrypt
-login, a git-less nix sandbox breaking the build) — is: **boot it and drive the
-real flow, observe behavior**, don't just typecheck. When changing platform
-code, run `cargo test` + `bun run e2e/smoke.ts`; for anything user-facing, drive
-the shell in a browser too.
+`check.sh` runs the whole gate; `e2e/smoke.ts` (API) and `e2e/shell-smoke.ts`
+(shell, headless chromium) are the two checked-in end-to-end guards — both use
+the fake harness (deterministic, no credentials). `puppeteer-core` is
+bun-auto-installed; chromium comes from the dev shell or `$LIQUID_CHROME`. The
+pattern that repeatedly paid off — and caught real bugs unit tests missed (a 10s
+scrypt login, a git-less nix sandbox breaking the build) — is: **boot it and
+drive the real flow, observe behavior**, don't just typecheck. When changing
+platform code, run `check.sh`; deeper shell work still deserves a throwaway
+puppeteer script driving the specific flow.
 
 Env knobs: `LIQUID_PORT`, `LIQUID_WORKSPACE_DIR`, `LIQUID_DATA_DIR`,
 `LIQUID_PIPELINE_MODE` (vibe|reviewed), `LIQUID_FAKE_AGENT`, `LIQUID_CLAUDE_BIN`,
