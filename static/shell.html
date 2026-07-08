@@ -190,6 +190,10 @@
   .chatwin .chatconvlist.open { display:block; }
   @media (max-width:720px) { #newwin { display:none; } }
 
+  /* minimize + dock */
+  .window.minimized { display:none !important; }
+  #dock button.mini { opacity:0.4; }
+
   /* app context menu */
   #appmenu { position:fixed; z-index:65; min-width:12rem; background:#1b1b24;
              border:1px solid #30303c; border-radius:10px; padding:0.25rem;
@@ -661,20 +665,24 @@ function openApp(id, focus) {
   win.dataset.app = id;
   const x = saved.x ?? (60 + openWindows.size * 40);
   const y = saved.y ?? (60 + openWindows.size * 40);
-  win.style.cssText = `left:${x}px; top:${y}px; width:${saved.w ?? 420}px; height:${saved.h ?? 520}px; z-index:${++zCounter};`;
+  const wpx = saved.w ?? 420, hpx = saved.h ?? 520;
+  win.style.cssText = `left:${x}px; top:${y}px; width:${wpx}px; height:${hpx}px; z-index:${++zCounter};`;
   win.innerHTML = `
     <div class="titlebar">
       <span class="ticon">${escapeHtml(app.icon)}</span>
       <span class="tname">${escapeHtml(app.name)}</span>
       <button class="history" title="History">🕘</button>
       <button class="reload" title="Reload">↻</button>
+      <button class="min" title="Minimize">–</button>
       <button class="max" title="Maximize">▢</button>
       <button class="close" title="Close">✕</button>
     </div>
     <iframe src="/app/${encodeURIComponent(id)}/" title="${escapeHtml(app.name)}"></iframe>`;
   $("shell").appendChild(win);
   openWindows.set(id, win);
-  layout.windows[id] = { x, y, w: win.offsetWidth, h: win.offsetHeight };
+  layout.windows[id] = { x, y, w: wpx, h: hpx, maximized: !!saved.maximized, minimized: !!saved.minimized };
+  if (saved.maximized) win.classList.add("maximized");
+  if (saved.minimized) win.classList.add("minimized");
   scheduleLayoutSave();
   renderDock();
 
@@ -690,11 +698,8 @@ function openApp(id, focus) {
     e.stopPropagation();
     win.querySelector("iframe").src = `/app/${encodeURIComponent(id)}/`;
   };
-  win.querySelector(".max").onclick = (e) => {
-    e.stopPropagation();
-    win.classList.toggle("maximized");
-    if (!win.classList.contains("maximized")) persistWindow(win);
-  };
+  win.querySelector(".max").onclick = (e) => { e.stopPropagation(); toggleMaximize(win); };
+  win.querySelector(".min").onclick = (e) => { e.stopPropagation(); minimizeWindow(win); };
   win.querySelector(".history").onclick = async (e) => {
     e.stopPropagation();
     const existing = win.querySelector(".histpop");
@@ -716,49 +721,8 @@ function openApp(id, focus) {
     } catch { pop.innerHTML = `<div class="none">Couldn't load history.</div>`; }
   };
 
-  // drag via titlebar
-  const bar = win.querySelector(".titlebar");
-  bar.addEventListener("pointerdown", (e) => {
-    if (e.target.tagName === "BUTTON") return;
-    e.preventDefault();
-    bringToFront(win);
-    // Grabbing a maximized window restores it to a floating window under the
-    // cursor (proper-WM behavior), then the drag continues from there.
-    if (win.classList.contains("maximized")) {
-      win.classList.remove("maximized");
-      const rw = win.offsetWidth;
-      win.style.left = Math.max(0, Math.min(e.clientX - rw / 2, innerWidth - rw)) + "px";
-      win.style.top = "0px";
-    }
-    win.classList.add("dragging");
-    const startX = e.clientX - win.offsetLeft;
-    const startY = e.clientY - win.offsetTop;
-    const move = (ev) => {
-      win.style.left = Math.max(0, Math.min(ev.clientX - startX, innerWidth - 80)) + "px";
-      win.style.top  = Math.max(0, Math.min(ev.clientY - startY, innerHeight - 60)) + "px";
-    };
-    const up = (ev) => {
-      removeEventListener("pointermove", move);
-      removeEventListener("pointerup", up);
-      win.classList.remove("dragging");
-      // edge snap: left/right edge → half screen; top edge → maximize
-      const SNAP = 14;
-      if (ev.clientY <= SNAP) {
-        win.classList.add("maximized");
-        return; // geometry untouched; un-maximize restores it
-      }
-      if (ev.clientX <= SNAP || ev.clientX >= innerWidth - SNAP) {
-        const half = Math.floor(innerWidth / 2);
-        win.style.left = ev.clientX <= SNAP ? "0px" : half + "px";
-        win.style.top = "0px";
-        win.style.width = half + "px";
-        win.style.height = innerHeight + "px";
-      }
-      persistWindow(win);
-    };
-    addEventListener("pointermove", move);
-    addEventListener("pointerup", up);
-  });
+  // drag, snap, and double-click-to-maximize via the shared window dragger
+  enableWinDrag(win, () => persistWindow(win));
 
   // persist native CSS resize
   new ResizeObserver(() => {
@@ -771,11 +735,24 @@ function openApp(id, focus) {
 
 function persistWindow(win) {
   const id = win.dataset.app;
-  layout.windows[id] = {
-    x: win.offsetLeft, y: win.offsetTop, w: win.offsetWidth, h: win.offsetHeight,
-  };
+  const prev = layout.windows[id] || {};
+  // While maximized/minimized the live offsets aren't the restore geometry —
+  // keep the previous geometry and just record the state flags.
+  const normal = !win.classList.contains("maximized") && !win.classList.contains("minimized");
+  const geom = normal
+    ? { x: win.offsetLeft, y: win.offsetTop, w: win.offsetWidth, h: win.offsetHeight }
+    : { x: prev.x, y: prev.y, w: prev.w, h: prev.h };
+  layout.windows[id] = { ...geom,
+    maximized: win.classList.contains("maximized"),
+    minimized: win.classList.contains("minimized") };
   scheduleLayoutSave();
 }
+
+// Minimize / maximize work on any .window (app or chat); persistence dispatches.
+function persistWin(win) { win.classList.contains("chatwin") ? saveChatWins() : persistWindow(win); }
+function minimizeWindow(win) { win.classList.add("minimized"); renderDock(); persistWin(win); }
+function restoreWindow(win) { win.classList.remove("minimized"); bringToFront(win); renderDock(); persistWin(win); }
+function toggleMaximize(win) { win.classList.toggle("maximized"); persistWin(win); }
 
 function bringToFront(win) {
   win.style.zIndex = ++zCounter;
@@ -785,16 +762,19 @@ function bringToFront(win) {
 function renderDock() {
   const dock = $("dock");
   dock.innerHTML = "";
+  const add = (win, icon, label) => {
+    const btn = document.createElement("button");
+    btn.textContent = icon; btn.title = label;
+    if (win.classList.contains("minimized")) btn.classList.add("mini");
+    btn.onclick = () => win.classList.contains("minimized") ? restoreWindow(win) : bringToFront(win);
+    dock.appendChild(btn);
+  };
   for (const [id, win] of openWindows) {
     const app = apps.find(a => a.id === id);
-    if (!app) continue;
-    const btn = document.createElement("button");
-    btn.textContent = app.icon;
-    btn.title = app.name;
-    btn.onclick = () => bringToFront(win);
-    dock.appendChild(btn);
+    if (app) add(win, app.icon, app.name);
   }
-  dock.classList.toggle("visible", openWindows.size > 0);
+  for (const w of chatWins.values()) add(w.el, "💬", w.title.textContent || "Chat");
+  dock.classList.toggle("visible", openWindows.size + chatWins.size > 0);
 }
 
 /* ---------- chat windows: independent, navigable chat surfaces on the desk ---------- */
@@ -806,15 +786,27 @@ const chatWins = new Map();     // windowId -> window object
 const pendingNewChats = [];     // windows that sent a new-conversation message
 let chatWinSeq = 0;
 
-// Reusable window drag (titlebar), with left/right half-screen edge snap.
+// Shared window dragger for any .window (app or chat): titlebar drag, edge
+// snaps (top→maximize, left/right→half), restore-a-maximized-window-on-move,
+// and double-click-to-maximize.
 function enableWinDrag(win, onDrop) {
-  win.querySelector(".titlebar").addEventListener("pointerdown", (e) => {
+  const bar = win.querySelector(".titlebar");
+  bar.addEventListener("dblclick", (e) => { if (e.target.tagName !== "BUTTON") toggleMaximize(win); });
+  bar.addEventListener("pointerdown", (e) => {
     if (e.target.tagName === "BUTTON") return;
     e.preventDefault();
     bringToFront(win);
     win.classList.add("dragging");
-    const startX = e.clientX - win.offsetLeft, startY = e.clientY - win.offsetTop;
+    let startX = e.clientX - win.offsetLeft, startY = e.clientY - win.offsetTop, unmaxed = false;
     const move = (ev) => {
+      // first movement on a maximized window restores it to float under the cursor
+      if (win.classList.contains("maximized") && !unmaxed) {
+        win.classList.remove("maximized");
+        const rw = win.offsetWidth;
+        win.style.left = Math.max(0, Math.min(ev.clientX - rw / 2, innerWidth - rw)) + "px";
+        win.style.top = "0px";
+        startX = ev.clientX - win.offsetLeft; startY = ev.clientY - win.offsetTop; unmaxed = true;
+      }
       win.style.left = Math.max(0, Math.min(ev.clientX - startX, innerWidth - 80)) + "px";
       win.style.top  = Math.max(0, Math.min(ev.clientY - startY, innerHeight - 60)) + "px";
     };
@@ -823,6 +815,7 @@ function enableWinDrag(win, onDrop) {
       removeEventListener("pointerup", up);
       win.classList.remove("dragging");
       const SNAP = 14;
+      if (ev.clientY <= SNAP) { win.classList.add("maximized"); if (onDrop) onDrop(); return; }
       if (ev.clientX <= SNAP || ev.clientX >= innerWidth - SNAP) {
         const half = Math.floor(innerWidth / 2);
         win.style.left = ev.clientX <= SNAP ? "0px" : half + "px";
@@ -850,11 +843,17 @@ function renderMsgInto(logEl, m) {
   else bubbleIn(logEl, "errmsg", m.content);
 }
 
-// Persist the open windows (which conversation each shows + geometry).
+// Persist the open windows (conversation + geometry + state). Geometry is only
+// refreshed from live offsets when the window is in its normal (floating) state.
 function saveChatWins() {
-  layout.chatWindows = [...chatWins.values()].map(w => ({
-    id: w.id, x: w.el.offsetLeft, y: w.el.offsetTop, w: w.el.offsetWidth, h: w.el.offsetHeight,
-  }));
+  layout.chatWindows = [...chatWins.values()].map(w => {
+    if (!w.el.classList.contains("maximized") && !w.el.classList.contains("minimized")) {
+      w.geom = { x: w.el.offsetLeft, y: w.el.offsetTop, w: w.el.offsetWidth, h: w.el.offsetHeight };
+    }
+    return { id: w.id, ...w.geom,
+      maximized: w.el.classList.contains("maximized"),
+      minimized: w.el.classList.contains("minimized") };
+  });
   scheduleLayoutSave();
 }
 
@@ -874,7 +873,7 @@ async function setConv(w, id) {
   }
   w.stop.hidden = !streams.has(id);
   w.input.focus();
-  saveChatWins();
+  saveChatWins(); renderDock();
 }
 
 function renderWinConvList(w) {
@@ -932,6 +931,8 @@ async function openChatWindow(convId, pos, saved) {
       <button class="wconv" title="Conversations">☰</button>
       <span class="tname"></span>
       <button class="wnew" title="New conversation">＋</button>
+      <button class="min" title="Minimize">–</button>
+      <button class="max" title="Maximize">▢</button>
       <button class="close" title="Close">✕</button>
     </div>
     <div class="chatconvlist"></div>
@@ -951,16 +952,21 @@ async function openChatWindow(convId, pos, saved) {
     convlist: win.querySelector(".chatconvlist"),
   };
   chatWins.set(w.wid, w);
+  w.geom = { x, y, w: W, h: H };
+  if (saved.maximized) win.classList.add("maximized");
+  if (saved.minimized) win.classList.add("minimized");
   w.send.disabled = !(ws && ws.readyState === WebSocket.OPEN);
 
   win.addEventListener("pointerdown", () => bringToFront(win));
   win.querySelector(".wconv").onclick = (e) => { e.stopPropagation(); renderWinConvList(w); w.convlist.classList.toggle("open"); };
   win.querySelector(".wnew").onclick = (e) => { e.stopPropagation(); w.convlist.classList.remove("open"); setConv(w, null); };
+  win.querySelector(".min").onclick = (e) => { e.stopPropagation(); minimizeWindow(win); };
+  win.querySelector(".max").onclick = (e) => { e.stopPropagation(); toggleMaximize(win); };
   win.querySelector(".close").onclick = (e) => {
     e.stopPropagation();
     win.remove(); chatWins.delete(w.wid);
     const pi = pendingNewChats.indexOf(w); if (pi >= 0) pendingNewChats.splice(pi, 1);
-    saveChatWins();
+    saveChatWins(); renderDock();
   };
   win.querySelector("form").onsubmit = (e) => {
     e.preventDefault();
@@ -983,6 +989,7 @@ async function openChatWindow(convId, pos, saved) {
 
   await setConv(w, convId ?? null);
   bringToFront(win);
+  renderDock();
 }
 
 /* ---------- mobile app view ---------- */
@@ -1215,7 +1222,7 @@ function connect() {
       if (wnew) {
         wnew.id = ev.conversation_id;
         wnew.title.textContent = ev.title;
-        saveChatWins();
+        saveChatWins(); renderDock();
       } else if (activeConversation === null) {
         activeConversation = ev.conversation_id;
         $("convtitle").textContent = ev.title;
