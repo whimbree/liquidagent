@@ -194,6 +194,19 @@
   .window.minimized { display:none !important; }
   #dock button.mini { opacity:0.4; }
 
+  /* window switcher (Alt-Tab style) */
+  #switcher { position:fixed; inset:0; z-index:90; display:none; align-items:center;
+              justify-content:center; gap:0.7rem; flex-wrap:wrap; padding:2rem;
+              background:rgba(0,0,0,0.45); }
+  #switcher.open { display:flex; }
+  .switch-tile { display:flex; flex-direction:column; align-items:center; gap:0.4rem; width:6.6rem;
+                 padding:0.9rem 0.5rem; border-radius:12px; background:#1b1b24;
+                 border:1px solid var(--line); cursor:pointer; }
+  .switch-tile.sel { border-color:var(--accent); background:var(--accent-soft); }
+  .switch-tile .sicon { font-size:1.8rem; line-height:1; }
+  .switch-tile .slabel { font-size:0.75rem; color:#c9c9d4; max-width:6rem; overflow:hidden;
+                         text-overflow:ellipsis; white-space:nowrap; }
+
   /* app context menu */
   #appmenu { position:fixed; z-index:65; min-width:12rem; background:#1b1b24;
              border:1px solid #30303c; border-radius:10px; padding:0.25rem;
@@ -316,6 +329,7 @@
 
   <div id="appmenu"></div>
   <div id="toast"></div>
+  <div id="switcher"></div>
 
   <button id="settingsbtn" title="Settings">⚙</button>
   <div id="panelbg">
@@ -777,6 +791,61 @@ function renderDock() {
   dock.classList.toggle("visible", openWindows.size + chatWins.size > 0);
 }
 
+/* ---------- window switcher / tiling / tidy ---------- */
+function allWindows() {
+  const list = [];
+  for (const [id, win] of openWindows) { const app = apps.find(a => a.id === id); if (app) list.push({ el: win, icon: app.icon, label: app.name }); }
+  for (const w of chatWins.values()) list.push({ el: w.el, icon: "💬", label: w.title.textContent || "Chat" });
+  return list.sort((a, b) => (parseInt(b.el.style.zIndex) || 0) - (parseInt(a.el.style.zIndex) || 0));
+}
+let switcher = null;
+function focusSwitcherItem(it) { it.el.classList.contains("minimized") ? restoreWindow(it.el) : bringToFront(it.el); }
+function openSwitcher() {
+  const items = allWindows();
+  if (items.length === 0) return;
+  if (items.length === 1) { focusSwitcherItem(items[0]); return; }
+  switcher = { items, sel: 1 }; // 1 = the window behind the current top
+  renderSwitcher();
+}
+function renderSwitcher() {
+  const box = $("switcher"); box.innerHTML = "";
+  switcher.items.forEach((it, i) => {
+    const tile = document.createElement("div");
+    tile.className = "switch-tile" + (i === switcher.sel ? " sel" : "");
+    tile.innerHTML = `<span class="sicon">${escapeHtml(it.icon)}</span><span class="slabel">${escapeHtml(it.label)}</span>`;
+    tile.onclick = () => commitSwitcher(i);
+    box.appendChild(tile);
+  });
+  box.classList.add("open");
+}
+function cycleSwitcher() { if (switcher) { switcher.sel = (switcher.sel + 1) % switcher.items.length; renderSwitcher(); } }
+function commitSwitcher(i) {
+  if (!switcher) return;
+  const it = switcher.items[i ?? switcher.sel];
+  $("switcher").classList.remove("open"); switcher = null;
+  if (it) focusSwitcherItem(it);
+}
+function cancelSwitcher() { if (switcher) { $("switcher").classList.remove("open"); switcher = null; } }
+
+function focusedWindow() { return document.querySelector(".window.focused:not(.minimized)"); }
+function closeWindow(win) { win.querySelector(".close")?.click(); }
+function snapHalf(win, left) {
+  win.classList.remove("maximized");
+  const half = Math.floor(innerWidth / 2);
+  win.style.left = (left ? 0 : half) + "px"; win.style.top = "0px";
+  win.style.width = half + "px"; win.style.height = innerHeight + "px";
+  persistWin(win);
+}
+function tidyWindows() {
+  let i = 0;
+  for (const win of document.querySelectorAll(".window:not(.minimized)")) {
+    win.classList.remove("maximized");
+    win.style.left = (40 + i * 34) + "px"; win.style.top = (48 + i * 34) + "px";
+    win.style.width = "460px"; win.style.height = "540px";
+    bringToFront(win); persistWin(win); i++;
+  }
+}
+
 /* ---------- chat windows: independent, navigable chat surfaces on the desk ---------- */
 // A chat window is its own view: it shows ONE conversation at a time but can
 // switch to any (its own ☰ list). Keyed by a stable window id, not by
@@ -814,12 +883,18 @@ function enableWinDrag(win, onDrop) {
       removeEventListener("pointermove", move);
       removeEventListener("pointerup", up);
       win.classList.remove("dragging");
-      const SNAP = 14;
-      if (ev.clientY <= SNAP) { win.classList.add("maximized"); if (onDrop) onDrop(); return; }
-      if (ev.clientX <= SNAP || ev.clientX >= innerWidth - SNAP) {
-        const half = Math.floor(innerWidth / 2);
-        win.style.left = ev.clientX <= SNAP ? "0px" : half + "px";
-        win.style.top = "0px"; win.style.width = half + "px"; win.style.height = innerHeight + "px";
+      // edge/corner snapping: top-center → maximize, corners → quarters, sides → halves
+      const S = 18;
+      const nl = ev.clientX <= S, nr = ev.clientX >= innerWidth - S;
+      const nt = ev.clientY <= S, nb = ev.clientY >= innerHeight - S;
+      const half = Math.floor(innerWidth / 2), hh = Math.floor(innerHeight / 2);
+      if (nt && !nl && !nr) { win.classList.add("maximized"); if (onDrop) onDrop(); return; }
+      if ((nl || nr) && (nt || nb)) {
+        win.style.left = (nl ? 0 : half) + "px"; win.style.top = (nt ? 0 : hh) + "px";
+        win.style.width = half + "px"; win.style.height = hh + "px";
+      } else if (nl || nr) {
+        win.style.left = (nl ? 0 : half) + "px"; win.style.top = "0px";
+        win.style.width = half + "px"; win.style.height = innerHeight + "px";
       }
       if (onDrop) onDrop();
     };
@@ -1126,14 +1201,27 @@ $("home").addEventListener("dblclick", (e) => {
   else openChatWindow(null, { x: e.clientX, y: e.clientY }); // a new chat window here
 });
 addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { closeChat(); $("convlist").classList.remove("open"); hideAppMenu(); }
-  // Ctrl+` cycles windows (Alt/Ctrl+Tab belong to the OS and browser)
-  if (e.key === "`" && e.ctrlKey && openWindows.size > 0) {
-    e.preventDefault();
-    const wins = [...openWindows.values()].sort((a, b) => a.style.zIndex - b.style.zIndex);
-    bringToFront(wins[0]); // lowest becomes top → round-robin
+  // window switcher: Ctrl+` (Alt/Ctrl+Tab belong to the OS/browser)
+  if (e.key === "`" && e.ctrlKey) { e.preventDefault(); switcher ? cycleSwitcher() : openSwitcher(); return; }
+  if (switcher) {
+    if (e.key === "Escape") { e.preventDefault(); cancelSwitcher(); return; }
+    if (e.key === "Enter") { e.preventDefault(); commitSwitcher(); return; }
   }
+  // tiling/actions on the focused window: Ctrl+Alt+Arrows / W / T
+  if (e.ctrlKey && e.altKey) {
+    if (e.key === "t" || e.key === "T") { e.preventDefault(); tidyWindows(); return; }
+    const fw = focusedWindow();
+    if (fw) {
+      if (e.key === "ArrowUp") { e.preventDefault(); toggleMaximize(fw); return; }
+      if (e.key === "ArrowDown") { e.preventDefault(); minimizeWindow(fw); return; }
+      if (e.key === "w" || e.key === "W") { e.preventDefault(); closeWindow(fw); return; }
+      if (e.key === "ArrowLeft") { e.preventDefault(); snapHalf(fw, true); return; }
+      if (e.key === "ArrowRight") { e.preventDefault(); snapHalf(fw, false); return; }
+    }
+  }
+  if (e.key === "Escape") { closeChat(); $("convlist").classList.remove("open"); hideAppMenu(); }
 });
+addEventListener("keyup", (e) => { if (switcher && !e.ctrlKey) commitSwitcher(); });
 
 // drag the chat panel by its header (desktop)
 $("chat").querySelector("header").addEventListener("pointerdown", (e) => {
