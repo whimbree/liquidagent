@@ -130,5 +130,30 @@ in release but ~2.6s in a debug build.
 
 Rust: no `unwrap()` in non-test code (use `?`/`context`/`expect("why")`), named
 constants over magic numbers, domain errors via `anyhow::Context`. TypeScript:
-strict, no `any`, Zod at the IPC boundary. Commit messages: imperative, explain
+strict, no `any`, validated at the IPC boundary. Commit messages: imperative, explain
 *why*, no attribution trailers. Never commit `.env`, `dev-data/`, `dev-workspace/`.
+
+## Code standards (ADR 0001)
+
+See `docs/adr/0001-effect-and-typing-discipline.md` for the rationale. The rules,
+applied to **platform TypeScript** (the harness in `workspace/agent/`, and the
+shell) — **generated apps are exempt and stay buildless**:
+
+- **No stringly-typed domain values.** Every closed set (event/request types,
+  roles, statuses, setting keys, pipeline states, model aliases…) is a **literal
+  union** / tagged union / `Schema.Literal` — **never a TS `enum`** (enums aren't
+  erasable, clash with `verbatimModuleSyntax`, and permit unsafe assignment).
+  Free text (copy, logs, CSS classes) stays a plain string.
+- **Branded IDs** (`ConversationId`, `AppId`, …) so ids can't be crossed.
+- **Exhaustiveness**: switch a closed union with `default: assertNever(x)`.
+- **Validate every I/O edge** (Zod today; `effect/Schema` when a surface earns it).
+- **Wire protocol has one source of truth** (`workspace/agent/protocol.json`);
+  the Rust (`agent.rs` `wire_parity`) and TS (`protocol.test.ts`) sides are each
+  tested against it, so drift fails a test. Keep that pattern for new protocols.
+- **Maximal-strict tsconfig** (`strict`, `noUncheckedIndexedAccess`,
+  `exactOptionalPropertyTypes`, `verbatimModuleSyntax`, …). `bun test` does not
+  typecheck — run `bun run typecheck` (tsc `--noEmit`).
+
+**Effect** is adopted by tier, not blanket: platform I/O may use it; the shell
+does not (strict TS + typed DOM, no Effect, no reactivity lib); generated apps
+never. Zod stays for the SDK's `tool()` schemas regardless.
