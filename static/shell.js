@@ -1,5 +1,22 @@
 "use strict";
-const $ = (id) => document.getElementById(id);
+/** Get a shell element by id. Ids are known-present in shell.html, so this is
+ *  asserted non-null; specific element types are narrowed at use sites.
+ *  @param {string} id @returns {HTMLElement} */
+const $ = (id) => /** @type {HTMLElement} */ (document.getElementById(id));
+/** @param {string} id @returns {HTMLInputElement} */
+const $in = (id) => /** @type {HTMLInputElement} */ ($(id));
+
+/**
+ * @typedef {{x:number,y:number,w:number,h:number,maximized?:boolean,minimized?:boolean}} WinGeom
+ * @typedef {{id:number|null,x:number,y:number,w:number,h:number,maximized?:boolean,minimized?:boolean}} ChatWinGeom
+ * @typedef {{name:string,apps:string[]}} Folder
+ * @typedef {{accent?:string,wallpaper?:string}} Appearance
+ * @typedef {{windows:Record<string,WinGeom>,chatWindows?:ChatWinGeom[],folders?:Record<string,Folder>,iconOrder?:string[],appearance?:Appearance,chat?:{x:number,y:number}}} Layout
+ * @typedef {{id:string,name:string,icon:string,description:string,has_backend?:boolean,backend?:{state:string}}} App
+ * @typedef {{id:number,title:string}} Conversation
+ * @typedef {{title:string,body:string,ts:number}} TrayNotification
+ * @typedef {{el:HTMLElement,wid:number,id:number|null,currentBot:HTMLElement|null,log:HTMLElement,input:HTMLInputElement,send:HTMLButtonElement,stop:HTMLButtonElement,status:HTMLElement,title:HTMLElement,convlist:HTMLElement,geom:WinGeom}} ChatWin
+ */
 const RECONNECT_DELAY_MS = 1500;
 const LAYOUT_SAVE_DEBOUNCE_MS = 600;
 const isMobile = () => window.matchMedia("(max-width: 720px)").matches;
@@ -61,7 +78,9 @@ $("login-form").onsubmit = async (e) => {
 };
 
 /* ---------- shell state ---------- */
+/** @type {App[]} */
 let apps = [];
+/** @type {Layout} */
 let layout = { windows: {} };   // appId -> {x,y,w,h}
 let zCounter = 10;
 const openWindows = new Map();  // appId -> element
@@ -144,6 +163,7 @@ $("pipeline-approve").onclick = async () => {
 $("pipeline-dismiss").onclick = () => { $("pipeline").classList.remove("show"); $("home").classList.remove("pushed"); };
 
 /* ---------- push notifications ---------- */
+/** @type {ServiceWorkerRegistration | null} */
 let swReg = null;
 async function initPush() {
   if (!("serviceWorker" in navigator)) return;
@@ -196,6 +216,7 @@ function updateUnreadUi() {
 }
 
 /* ---------- agent-busy indicator (serialized worker) ---------- */
+/** @type {string | null} */
 let busyOn = null;
 function updateBusyIndicator() {
   const el = $("busy");
@@ -399,6 +420,7 @@ function toast(text) {
 }
 
 /* ---------- notification tray (in-shell history; distinct from OS push) ---------- */
+/** @type {TrayNotification[]} */
 let notifications = [];
 let unseenNotifs = 0;
 function loadNotifs() { try { notifications = JSON.parse(localStorage.getItem("liquid_notifs") || "[]"); } catch { notifications = []; } }
@@ -965,13 +987,17 @@ $("mobileback").onclick = () => {
 $("mobilereload").onclick = () => { $("mobileframe").src = $("mobileframe").src; };
 
 /* ---------- chat ---------- */
+/** @type {Conversation[]} */
 let conversations = [];
+/** @type {number | null} */
 let activeConversation = null;
+/** @type {HTMLElement | null} */
 let currentBot = null;
 // conversationId -> { raw } : assistant text still streaming, kept in memory
 // independent of which conversation is on screen (the server only persists a
 // reply on "done", so this is what survives switching chats mid-stream).
 const streams = new Map();
+/** @type {WebSocket | null} */
 let ws = null;
 
 async function loadConversations() {
