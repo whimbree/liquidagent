@@ -34,7 +34,7 @@ Adopt quality discipline **by tier**, not as a blanket. The governing line:
 | Tier | Effect? | Types? | Build? |
 |---|---|---|---|
 | Harness / platform I/O | **Yes** (pilot first) | strict + Schema | yes |
-| Shell | **No** (Effect is ceremony for DOM glue) | strict TS, discriminated/branded | **yes** (new) |
+| Shell | **No** (Effect is ceremony for DOM glue) | strict TS, discriminated/branded | **No** — see the update below |
 | Generated apps | **No** | encouraged, never required | **No** — stays buildless |
 
 ### 1. Effect + Schema in the harness (pilot)
@@ -101,13 +101,18 @@ passed where an `AppId` is expected.
   network line.
 - **One constants module per side** for the closed sets; delete scattered literals.
 
-### 5. The build-step boundary (the one real architectural change)
+### 5. The build-step boundary — resolved *buildless* (UPDATE)
 
-Typing the shell means moving its inline JS into a `.ts` module and
-bundling+inlining it (tsc cannot check `<script>` inside `.html`). That is a build
-step **for platform code** — defensible *because* the rule is: apps stay buildless,
-platform gets a build. The supervisor can inline the bundle at build time so the
-shell is still served as a single asset.
+Original plan: move the shell to a `.ts` module and bundle+inline it (a build step
+for platform code). **In practice we went buildless and kept the type safety:**
+the inline `<script>` was extracted to `static/shell.js` (an ES module served at
+`/shell.js`) and typechecked with **`checkJs`** (`static/tsconfig.json`, full
+`strict`) — the *same* compiler, strictness, and errors as `.ts`, with **no
+transpile step**. Types are JSDoc (`/** @type {App} */`, `@param`), which is more
+verbose than `.ts` syntax but needs no bundler and stays true to liquid's
+buildless ethos. `bun run typecheck:shell` (in `workspace/agent`) runs it. So the
+shell tier's "Build?" is **No** after all — best of both. Native `.ts` remains an
+option later if the JSDoc verbosity outweighs the zero-build benefit.
 
 ## Cross-language reality
 
@@ -127,12 +132,15 @@ unaffected); some up-front churn moving to branded ids and central constants.
 
 ## Sequencing
 
-1. **Pilot** Effect + Schema in the harness; replace Zod. Keep `fake-harness` and
-   the IPC/prompt tests green.
-2. **Shell → strict TS + build**: extract inline JS to `.ts`, add the strict
-   tsconfig, introduce literal/tagged/branded types and `assertNever`. No Effect.
-3. **Codify** the rules (2–4 above) as a "Code standards" section in `CLAUDE.md`.
-4. **Re-evaluate** wider Effect adoption after living with the pilot.
+1. ~~Pilot Effect + Schema in the harness~~ — **done, Effect-free** (zod stays for
+   the SDK's `tool()` schemas, so Effect/Schema would only be additive; applied the
+   literal-union / branded-id / exhaustiveness / parity-test discipline instead,
+   no new deps). Wider Effect deferred until a surface earns it.
+2. **Shell → strict typed, buildless** — **done**: extracted to `static/shell.js`,
+   `checkJs` strict, JSDoc types (literal/branded/exhaustive), zero `tsc` errors,
+   10 browser suites green. No build step, no Effect.
+3. **Codify** the rules as a "Code standards" section in `CLAUDE.md` — **done**.
+4. **Re-evaluate** wider Effect adoption when a platform surface actually needs it.
 
 ## Resolutions
 

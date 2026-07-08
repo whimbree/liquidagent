@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:shell": "tsc -p ../../static/tsconfig.json"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
