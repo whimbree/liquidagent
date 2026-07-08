@@ -215,6 +215,20 @@
   .switch-tile .slabel { font-size:0.75rem; color:#c9c9d4; max-width:6rem; overflow:hidden;
                          text-overflow:ellipsis; white-space:nowrap; }
 
+  /* command palette */
+  #palette { position:fixed; inset:0; z-index:85; display:none; align-items:flex-start;
+             justify-content:center; padding-top:12vh; background:rgba(0,0,0,0.45); }
+  #palette.open { display:flex; }
+  .pal-card { width:min(34rem,92vw); background:var(--panel); border:1px solid var(--line);
+              border-radius:14px; overflow:hidden; box-shadow:0 20px 60px rgba(0,0,0,0.6); }
+  #palette-input { width:100%; box-sizing:border-box; border:0; border-bottom:1px solid var(--line);
+                   background:transparent; color:inherit; font-size:1rem; padding:0.9rem 1rem; }
+  #palette-input:focus { outline:none; }
+  #palette-results { max-height:50vh; overflow-y:auto; }
+  .pal-item { display:flex; align-items:center; gap:0.7rem; padding:0.6rem 1rem; cursor:pointer; }
+  .pal-item.sel { background:var(--accent-soft); }
+  .pal-icon { width:1.5rem; text-align:center; }
+
   /* folders */
   .folder { display:flex; flex-direction:column; align-items:center; gap:0.45rem; padding:0.5rem 0.3rem;
             border-radius:14px; cursor:pointer; }
@@ -388,6 +402,10 @@
   <div id="appmenu"></div>
   <div id="toast"></div>
   <div id="switcher"></div>
+  <div id="palette"><div class="pal-card">
+    <input id="palette-input" placeholder="Search apps, run actions, or ask liquid…" autocomplete="off">
+    <div id="palette-results"></div>
+  </div></div>
   <div id="folder-view"><div class="fv-card">
     <header><input id="fv-name" placeholder="Folder"><button id="fv-close" title="Close">✕</button></header>
     <div id="fv-grid"></div>
@@ -1068,6 +1086,51 @@ function tidyWindows() {
   }
 }
 
+/* ---------- command palette (⌘K) ---------- */
+function askLiquidSend(text) { summonChat(); $("input").value = text; $("composer").requestSubmit(); }
+function paletteItems(q) {
+  const query = q.toLowerCase().trim();
+  const items = [];
+  for (const a of apps) items.push({ icon: a.icon, label: `Open ${a.name}`, run: () => openApp(a.id, true) });
+  items.push({ icon: "💬", label: "New chat window", run: () => isMobile() ? newConversation() : openChatWindow(null) });
+  items.push({ icon: "🪟", label: "Tidy windows", run: () => tidyWindows() });
+  items.push({ icon: "⚙", label: "Open settings", run: () => { $("panelbg").classList.add("open"); loadSettings(); } });
+  items.push({ icon: "🔔", label: "Show notifications", run: () => $("tray-btn").click() });
+  let filtered = query ? items.filter(it => it.label.toLowerCase().includes(query)) : items;
+  // "Ask liquid" is the fallback, below any matching apps/actions.
+  if (query) filtered = [...filtered.slice(0, 7), { icon: "✨", label: `Ask liquid: “${q.trim()}”`, run: () => askLiquidSend(q.trim()) }];
+  return filtered.slice(0, 8);
+}
+let palette = null;
+function renderPalette(q) {
+  const items = paletteItems(q);
+  palette = { items, sel: 0 };
+  const box = $("palette-results"); box.innerHTML = "";
+  items.forEach((it, i) => {
+    const el = document.createElement("div");
+    el.className = "pal-item" + (i === 0 ? " sel" : "");
+    el.innerHTML = `<span class="pal-icon">${escapeHtml(it.icon)}</span><span>${escapeHtml(it.label)}</span>`;
+    el.onclick = () => runPalette(i);
+    box.appendChild(el);
+  });
+}
+function openPalette() { $("palette-input").value = ""; renderPalette(""); $("palette").classList.add("open"); $("palette-input").focus(); }
+function closePalette() { $("palette").classList.remove("open"); palette = null; }
+function movePalette(d) {
+  if (!palette || !palette.items.length) return;
+  palette.sel = (palette.sel + d + palette.items.length) % palette.items.length;
+  [...$("palette-results").children].forEach((el, i) => el.classList.toggle("sel", i === palette.sel));
+}
+function runPalette(i) { const it = palette && palette.items[i ?? palette.sel]; closePalette(); if (it) it.run(); }
+$("palette-input").addEventListener("input", () => renderPalette($("palette-input").value));
+$("palette-input").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown") { e.preventDefault(); movePalette(1); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); movePalette(-1); }
+  else if (e.key === "Enter") { e.preventDefault(); runPalette(); }
+  else if (e.key === "Escape") { e.preventDefault(); closePalette(); }
+});
+$("palette").onclick = (e) => { if (e.target === $("palette")) closePalette(); };
+
 /* ---------- chat windows: independent, navigable chat surfaces on the desk ---------- */
 // A chat window is its own view: it shows ONE conversation at a time but can
 // switch to any (its own ☰ list). Keyed by a stable window id, not by
@@ -1444,6 +1507,8 @@ $("home").addEventListener("dblclick", (e) => {
   else openChatWindow(null, { x: e.clientX, y: e.clientY }); // a new chat window here
 });
 addEventListener("keydown", (e) => {
+  // command palette: ⌘K / Ctrl+K
+  if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) { e.preventDefault(); openPalette(); return; }
   // window switcher: Ctrl+` (Alt/Ctrl+Tab belong to the OS/browser)
   if (e.key === "`" && e.ctrlKey) { e.preventDefault(); switcher ? cycleSwitcher() : openSwitcher(); return; }
   if (switcher) {
