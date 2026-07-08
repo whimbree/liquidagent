@@ -722,6 +722,14 @@ function openApp(id, focus) {
     if (e.target.tagName === "BUTTON") return;
     e.preventDefault();
     bringToFront(win);
+    // Grabbing a maximized window restores it to a floating window under the
+    // cursor (proper-WM behavior), then the drag continues from there.
+    if (win.classList.contains("maximized")) {
+      win.classList.remove("maximized");
+      const rw = win.offsetWidth;
+      win.style.left = Math.max(0, Math.min(e.clientX - rw / 2, innerWidth - rw)) + "px";
+      win.style.top = "0px";
+    }
     win.classList.add("dragging");
     const startX = e.clientX - win.offsetLeft;
     const startY = e.clientY - win.offsetTop;
