@@ -14,7 +14,7 @@ const $if = (id) => /** @type {HTMLIFrameElement} */ ($(id));
  * @typedef {{name:string,apps:string[]}} Folder
  * @typedef {{accent?:string,wallpaper?:string}} Appearance
  * @typedef {{windows:Record<string,WinGeom>,chatWindows?:ChatWinGeom[],folders?:Record<string,Folder>,iconOrder?:string[],appearance?:Appearance,chat?:{x:number,y:number}}} Layout
- * @typedef {{id:string,name:string,icon:string,description:string,has_backend?:boolean,backend?:{state:string}}} App
+ * @typedef {{id:string,name:string,icon:string,description:string,has_backend?:boolean,backend?:{state:string},window?:{width?:number,height?:number,minWidth?:number,minHeight?:number}}} App
  * @typedef {{id:number,title:string}} Conversation
  * @typedef {{title:string,body:string,ts:number}} TrayNotification
  * @typedef {{el:HTMLElement,wid:number,id:number|null,currentBot:HTMLElement|null,log:HTMLElement,input:HTMLInputElement,send:HTMLButtonElement,stop:HTMLButtonElement,status:HTMLElement,title:HTMLElement,convlist:HTMLElement,geom:WinGeom}} ChatWin
@@ -516,8 +516,12 @@ function openApp(id, focus) {
   win.dataset.app = id;
   const x = saved.x ?? (60 + openWindows.size * 40);
   const y = saved.y ?? (60 + openWindows.size * 40);
-  const wpx = saved.w ?? 420, hpx = saved.h ?? 520;
+  // First-open size comes from the app's declared geometry; after that, the
+  // remembered per-app geometry wins.
+  const wpx = saved.w ?? app.window?.width ?? 420, hpx = saved.h ?? app.window?.height ?? 520;
   win.style.cssText = `left:${x}px; top:${y}px; width:${wpx}px; height:${hpx}px; z-index:${++zCounter};`;
+  if (app.window?.minWidth) win.style.minWidth = app.window.minWidth + "px";
+  if (app.window?.minHeight) win.style.minHeight = app.window.minHeight + "px";
   win.innerHTML = `
     <div class="titlebar">
       <span class="ticon">${escapeHtml(app.icon)}</span>

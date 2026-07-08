@@ -48,7 +48,10 @@ To create an app called (for example) timer:
 
 - apps/timer/app.json — {"name": "Timer", "icon": "⏱️", "description": "one line"}
   (icon is a single emoji; the directory name is the app id: lowercase,
-  a-z 0-9 - _ only)
+  a-z 0-9 - _ only). Optional: "window": {"width": 320, "height": 480,
+  "minWidth": 260, "minHeight": 360} to declare the desktop window's opening
+  size — set it to fit the app (a calculator small, a dashboard wide); omit for
+  the default. The user can still resize, and their size is remembered per app.
 - apps/timer/index.html — a COMPLETE, self-contained page. Vanilla HTML/CSS/JS
   (inline or separate files in the same directory). No CDNs, no frameworks,
   no build tools. It renders inside an iframe.

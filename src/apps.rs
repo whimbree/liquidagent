@@ -14,6 +14,22 @@ const APPS_DIR: &str = "apps";
 const MANIFEST_FILE: &str = "app.json";
 const DEFAULT_ICON: &str = "📦";
 
+/// Optional window geometry an app can declare (camelCase in JSON). Absent
+/// fields fall back to the shell's defaults; passed through to the shell so a
+/// calculator opens small and a dashboard opens wide.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppWindow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_height: Option<u32>,
+}
+
 /// What the agent writes to apps/<id>/app.json.
 #[derive(Debug, Deserialize)]
 struct RawManifest {
@@ -22,6 +38,8 @@ struct RawManifest {
     icon: Option<String>,
     #[serde(default)]
     description: Option<String>,
+    #[serde(default)]
+    window: Option<AppWindow>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -31,6 +49,8 @@ pub struct AppManifest {
     pub icon: String,
     pub description: String,
     pub has_backend: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window: Option<AppWindow>,
 }
 
 /// Scan workspace/apps/*/app.json. Malformed manifests are skipped with a
@@ -62,6 +82,7 @@ pub fn scan_apps(workspace_dir: &Path) -> Vec<AppManifest> {
                     icon: manifest.icon.unwrap_or_else(|| DEFAULT_ICON.to_string()),
                     description: manifest.description.unwrap_or_default(),
                     has_backend: dir.join(crate::backends::BACKEND_ENTRY).exists(),
+                    window: manifest.window,
                     id,
                 }),
                 Err(err) => {
@@ -451,5 +472,32 @@ mod tests {
     #[test]
     fn scan_of_missing_dir_is_empty() {
         assert!(scan_apps(Path::new("/nonexistent/liquid-test")).is_empty());
+    }
+
+    #[test]
+    fn scan_parses_declared_window_geometry() {
+        let root = std::env::temp_dir().join(format!("liquid-win-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let dir = root.join("apps").join("calc");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("app.json"),
+            r#"{"name":"Calc","window":{"width":320,"height":480,"minWidth":260}}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("index.html"), "<h1>x</h1>").unwrap();
+        let no_win = root.join("apps").join("plain");
+        std::fs::create_dir_all(&no_win).unwrap();
+        std::fs::write(no_win.join("app.json"), r#"{"name":"Plain"}"#).unwrap();
+        std::fs::write(no_win.join("index.html"), "<h1>x</h1>").unwrap();
+
+        let apps = scan_apps(&root);
+        let calc = apps.iter().find(|a| a.id == "calc").unwrap();
+        let w = calc.window.as_ref().expect("window parsed");
+        assert_eq!((w.width, w.height, w.min_width, w.min_height), (Some(320), Some(480), Some(260), None));
+        // apps without a window block get None (back-compat)
+        assert!(apps.iter().find(|a| a.id == "plain").unwrap().window.is_none());
+
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

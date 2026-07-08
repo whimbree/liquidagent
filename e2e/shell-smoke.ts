@@ -58,7 +58,7 @@ try {
   // agent grows an app -> icon lands (commit + a fake reply claims file tools -> deploy)
   const dir = join(WS, "apps", "board");
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "app.json"), JSON.stringify({ name: "Board", icon: "📋", description: "smoke" }));
+  writeFileSync(join(dir, "app.json"), JSON.stringify({ name: "Board", icon: "📋", description: "smoke", window: { width: 360, height: 300, minWidth: 300 } }));
   writeFileSync(join(dir, "index.html"), "<!doctype html><h1>board</h1>");
   git("add -A"); git('commit -q -m "add board"');
   await page.click("#chatfab");
@@ -71,6 +71,8 @@ try {
   // open it -> window; minimize -> dock -> restore; maximize
   await page.click(".appicon");
   await page.waitForSelector(".window:not(.chatwin)", { timeout: 5000 });
+  const openWidth = await page.$eval(".window:not(.chatwin)", (el) => (el as HTMLElement).offsetWidth);
+  check("window opens at the app's declared width (not the default)", openWidth > 340 && openWidth < 400);
   await page.click(".window:not(.chatwin) .titlebar .min");
   await page.waitForFunction(() => document.querySelector(".window:not(.chatwin)")!.classList.contains("minimized"), { timeout: 3000 });
   check("app opens as a window and minimizes to the dock", (await page.$$("#dock button")).length === 1);
