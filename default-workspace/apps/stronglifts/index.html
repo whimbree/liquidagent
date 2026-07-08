@@ -192,7 +192,41 @@ function freshState(units, done) {
     session: null, history: [],
   };
 }
-const save = () => localStorage.setItem(KEY, JSON.stringify(S));
+/* ---------- persistence: localStorage (offline) + platform KV (durable/sync) ---------- */
+// The app iframe is same-origin with the shell, so it can use the shell's auth
+// token to reach the SQLite-backed per-app KV. localStorage is the always-there
+// offline copy; KV is the durable, cross-device one. Last-write-wins by updatedAt.
+const KVURL = "/api/kv/stronglifts/state";
+const token = () => localStorage.getItem("liquid_token");
+const authHeaders = () => { const t = token(); return t ? { Authorization: "Bearer " + t } : {}; };
+async function pushRemote() {
+  if (!token()) return;
+  try {
+    await fetch(KVURL, { method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ value: JSON.stringify(S) }) });
+  } catch {}
+}
+async function pullRemote() {
+  if (!token()) return null;
+  try { const r = await fetch(KVURL, { headers: authHeaders() }); if (!r.ok) return null; return JSON.parse((await r.json()).value); }
+  catch { return null; }
+}
+let pushTimer = null;
+function save() {
+  S.updatedAt = Date.now();
+  localStorage.setItem(KEY, JSON.stringify(S));
+  clearTimeout(pushTimer); pushTimer = setTimeout(pushRemote, 800); // debounce; offline-safe
+}
+// On open: localStorage already rendered instantly; if the server has a newer
+// copy (e.g. from your other device), adopt it. Otherwise push ours up.
+async function syncOnLoad() {
+  const remote = await pullRemote();
+  if (remote && (remote.updatedAt || 0) > (S.updatedAt || 0)) {
+    S = remote; localStorage.setItem(KEY, JSON.stringify(S)); render();
+  } else {
+    pushRemote();
+  }
+}
 
 /* ---------- helpers ---------- */
 const U = () => S.units;
@@ -575,9 +609,10 @@ document.querySelectorAll("nav button").forEach(b => b.addEventListener("click",
 $("#restMinus").onclick = () => { if (rest) { rest.endsAt = Math.max(Date.now(), rest.endsAt - 15000); rest.fired = false; $("#rest").classList.remove("done"); tickRest(); } };
 $("#restPlus").onclick = () => { if (rest) { rest.endsAt += 15000; rest.fired = false; $("#rest").classList.remove("done"); tickRest(); } };
 $("#restSkip").onclick = stopRest;
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { tickRest(); if (rest && !rest.fired) requestWake(); } });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") { tickRest(); if (rest && !rest.fired) requestWake(); pullRemote().then(r => { if (r && (r.updatedAt || 0) > (S.updatedAt || 0)) { S = r; localStorage.setItem(KEY, JSON.stringify(S)); render(); } }); } });
 
 render();
+syncOnLoad();
 </script>
 </body>
 </html>
