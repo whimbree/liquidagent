@@ -165,6 +165,14 @@
   .msg pre { background:#0c0c10; padding:0.6rem 0.8rem; border-radius:8px; overflow-x:auto; }
   .msg pre code { background:transparent; padding:0; }
   .msg a { color:#8fa8e8; }
+  .msg .ts { display:block; font-size:0.6rem; color:var(--dim); margin-top:0.25rem; text-align:right; opacity:0.6; }
+  .scheduled .ts { text-align:center; }
+  .scrollbtn, #scrolldown { position:absolute; right:0.8rem; width:1.9rem; height:1.9rem; border-radius:50%;
+    background:var(--accent); color:#fff; display:none; align-items:center; justify-content:center; padding:0;
+    box-shadow:0 4px 12px rgba(0,0,0,0.45); z-index:6; font-size:0.9rem; }
+  .scrollbtn.show, #scrolldown.show { display:flex; }
+  .chatwin .scrollbtn { bottom:3.4rem; }
+  #scrolldown { bottom:4rem; }
   #status { font-size:0.75rem; color:var(--dim); padding:0 0.9rem 0.35rem; min-height:1.1rem; }
   #busy { display:none; font-size:0.78rem; color:#a8c0f0; padding:0.35rem 0.9rem;
           border-top:1px solid var(--line); background:#161a26; }
@@ -348,6 +356,7 @@
     </header>
     <div id="convlist"></div>
     <div id="log"></div>
+    <button id="scrolldown" title="Jump to latest">↓</button>
     <div id="busy"></div>
     <div id="status"></div>
     <form id="composer">
@@ -1054,19 +1063,35 @@ function enableWinDrag(win, onDrop) {
   });
 }
 
-function bubbleIn(logEl, cls, text, asMarkdown = false) {
+function nearBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 80; }
+function fmtTime(sec) { return new Date(sec * 1000).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }); }
+function syncScrollBtn(logEl) { if (logEl && logEl._scrollBtn) logEl._scrollBtn.classList.toggle("show", !nearBottom(logEl)); }
+// Streaming updates go through the message body so the timestamp survives.
+function setBubble(el, html) {
+  const logEl = el.parentElement;
+  const stick = logEl ? nearBottom(logEl) : false;
+  const b = el.querySelector(".mbody"); if (b) b.innerHTML = html;
+  if (logEl) { if (stick) logEl.scrollTop = logEl.scrollHeight; syncScrollBtn(logEl); }
+}
+function bubbleIn(logEl, cls, text, asMarkdown = false, ts) {
+  const stick = nearBottom(logEl);
   const el = document.createElement("div");
   el.className = "msg " + cls;
-  if (asMarkdown) el.innerHTML = renderMarkdown(text); else el.textContent = text;
+  const t = ts || Date.now() / 1000;
+  el.title = new Date(t * 1000).toLocaleString();
+  el.innerHTML = `<span class="mbody"></span><span class="ts">${fmtTime(t)}</span>`;
+  const body = el.querySelector(".mbody");
+  if (asMarkdown) body.innerHTML = renderMarkdown(text); else body.textContent = text;
   logEl.appendChild(el);
-  logEl.scrollTop = logEl.scrollHeight;
+  if (stick) logEl.scrollTop = logEl.scrollHeight;
+  syncScrollBtn(logEl);
   return el;
 }
 function renderMsgInto(logEl, m) {
-  if (m.role === "user") bubbleIn(logEl, "user", m.content);
-  else if (m.role === "assistant") bubbleIn(logEl, "bot", m.content, true);
-  else if (m.role === "scheduled") bubbleIn(logEl, "scheduled", m.content);
-  else bubbleIn(logEl, "errmsg", m.content);
+  if (m.role === "user") bubbleIn(logEl, "user", m.content, false, m.created_at);
+  else if (m.role === "assistant") bubbleIn(logEl, "bot", m.content, true, m.created_at);
+  else if (m.role === "scheduled") bubbleIn(logEl, "scheduled", m.content, false, m.created_at);
+  else bubbleIn(logEl, "errmsg", m.content, false, m.created_at);
 }
 
 // Persist the open windows (conversation + geometry + state). Geometry is only
@@ -1094,7 +1119,7 @@ async function setConv(w, id) {
     if (w.id !== id) return; // navigated away while loading
     for (const m of data.messages) renderMsgInto(w.log, m);
     const pending = streams.get(id);
-    if (pending) { w.currentBot = bubbleIn(w.log, "bot", ""); w.currentBot.innerHTML = renderMarkdown(pending.raw); }
+    if (pending) { w.currentBot = bubbleIn(w.log, "bot", ""); setBubble(w.currentBot, renderMarkdown(pending.raw)); }
     unread.delete(id); updateUnreadUi();
   }
   w.stop.hidden = !streams.has(id);
@@ -1112,8 +1137,19 @@ function renderWinConvList(w) {
   for (const conv of conversations) {
     const el = document.createElement("div");
     el.className = "conv" + (conv.id === w.id ? " active" : "");
+    if (unread.has(conv.id)) { const d = document.createElement("span"); d.className = "unreaddot"; el.appendChild(d); }
     const label = document.createElement("span"); label.textContent = conv.title || "Untitled";
-    el.appendChild(label);
+    const del = document.createElement("span"); del.className = "del"; del.textContent = "✕";
+    del.onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Delete "${conv.title}"?`)) return;
+      await api(`/api/conversations/${conv.id}`, { method: "DELETE" });
+      conversations = conversations.filter(c => c.id !== conv.id);
+      for (const cw of chatWins.values()) if (cw.id === conv.id) setConv(cw, null);
+      if (activeConversation === conv.id) newConversation();
+      renderConvList(); renderWinConvList(w);
+    };
+    el.append(label, del);
     el.onclick = () => { box.classList.remove("open"); setConv(w, conv.id); };
     box.appendChild(el);
   }
@@ -1125,8 +1161,8 @@ function chatWinApply(w, ev) {
   switch (ev.type) {
     case "token":
       if (!w.currentBot) w.currentBot = bubbleIn(w.log, "bot", "");
-      w.currentBot.innerHTML = renderMarkdown(streams.get(ev.conversation_id)?.raw ?? "");
-      w.log.scrollTop = w.log.scrollHeight; w.stop.hidden = false; break;
+      setBubble(w.currentBot, renderMarkdown(streams.get(ev.conversation_id)?.raw ?? ""));
+      w.stop.hidden = false; break;
     case "tool":
       w.status.textContent = `⚙ ${ev.name}…`; w.stop.hidden = false; break;
     case "done":
@@ -1163,6 +1199,7 @@ async function openChatWindow(convId, pos, saved) {
     </div>
     <div class="chatconvlist"></div>
     <div class="chatlog"></div>
+    <button class="scrollbtn" title="Jump to latest">↓</button>
     <div class="chatstatus"></div>
     <form class="chatcompose">
       <input placeholder="Ask liquid…" autocomplete="off">
@@ -1178,6 +1215,9 @@ async function openChatWindow(convId, pos, saved) {
     convlist: win.querySelector(".chatconvlist"),
   };
   chatWins.set(w.wid, w);
+  w.log._scrollBtn = win.querySelector(".scrollbtn");
+  w.log.addEventListener("scroll", () => syncScrollBtn(w.log));
+  w.log._scrollBtn.onclick = () => { w.log.scrollTop = w.log.scrollHeight; syncScrollBtn(w.log); };
   w.geom = { x, y, w: W, h: H };
   if (saved.maximized) win.classList.add("maximized");
   if (saved.minimized) win.classList.add("minimized");
@@ -1272,14 +1312,7 @@ function renderConvList() {
     box.appendChild(el);
   }
 }
-function bubble(cls, text, asMarkdown = false) {
-  const el = document.createElement("div");
-  el.className = "msg " + cls;
-  if (asMarkdown) el.innerHTML = renderMarkdown(text); else el.textContent = text;
-  $("log").appendChild(el);
-  $("log").scrollTop = $("log").scrollHeight;
-  return el;
-}
+function bubble(cls, text, asMarkdown = false, ts) { return bubbleIn($("log"), cls, text, asMarkdown, ts); }
 async function openConversation(id) {
   activeConversation = id; currentBot = null;
   unread.delete(id); updateUnreadUi();
@@ -1289,18 +1322,12 @@ async function openConversation(id) {
   const data = await (await api(`/api/conversations/${id}/messages`)).json();
   if (activeConversation !== id) return; // a newer switch superseded this load
   $("log").innerHTML = "";
-  for (const m of data.messages) {
-    if (m.role === "user") bubble("user", m.content);
-    else if (m.role === "assistant") bubble("bot", m.content, true);
-    else if (m.role === "scheduled") bubble("scheduled", m.content);
-    else bubble("errmsg", m.content);
-  }
+  for (const m of data.messages) renderMsgInto($("log"), m);
   // Restore a reply that's still streaming into this conversation.
   const pending = streams.get(id);
   if (pending) {
     currentBot = bubble("bot", "");
-    currentBot.innerHTML = renderMarkdown(pending.raw);
-    $("log").scrollTop = $("log").scrollHeight;
+    setBubble(currentBot, renderMarkdown(pending.raw));
   }
   setStreaming(!!pending);
 }
@@ -1315,6 +1342,9 @@ function newConversation() {
 $("newchat").onclick = newConversation; // new conversation in the panel
 $("newwin").onclick = () => { if (!isMobile()) openChatWindow(activeConversation); }; // pop out / new window
 $("convtoggle").onclick = () => { renderConvList(); $("convlist").classList.toggle("open"); };
+$("log")._scrollBtn = $("scrolldown");
+$("log").addEventListener("scroll", () => syncScrollBtn($("log")));
+$("scrolldown").onclick = () => { $("log").scrollTop = $("log").scrollHeight; syncScrollBtn($("log")); };
 
 /* ---- summonable chat: double-tap the desk and liquid appears there ---- */
 function summonChat(x, y) {
@@ -1470,13 +1500,10 @@ function connect() {
       return;
     }
     if (ev.type === "done" || ev.type === "error") {
-      // Anything finishing out of view gets an unread mark.
-      const chatOpen = $("chat").classList.contains("open");
-      if (ev.conversation_id !== activeConversation || !chatOpen) {
-        unread.add(ev.conversation_id);
-        updateUnreadUi();
-        renderConvList();
-      }
+      // Mark unread only if no visible surface is showing this conversation.
+      const shownPrimary = activeConversation === ev.conversation_id && $("chat").classList.contains("open");
+      const shownWindow = [...chatWins.values()].some(w => w.id === ev.conversation_id && !w.el.classList.contains("minimized"));
+      if (!shownPrimary && !shownWindow) { unread.add(ev.conversation_id); updateUnreadUi(); renderConvList(); }
     }
     // Buffer streaming assistant text per-conversation, on screen or not — the
     // reply isn't persisted server-side until "done", so this is what survives
@@ -1494,8 +1521,7 @@ function connect() {
     switch (ev.type) {
       case "token": {
         if (!currentBot) currentBot = bubble("bot", "");
-        currentBot.innerHTML = renderMarkdown(streams.get(ev.conversation_id)?.raw ?? "");
-        $("log").scrollTop = $("log").scrollHeight;
+        setBubble(currentBot, renderMarkdown(streams.get(ev.conversation_id)?.raw ?? ""));
         setStreaming(true);
         break;
       }
