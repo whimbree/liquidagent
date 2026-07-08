@@ -2,6 +2,9 @@
   "name": "liquid-agent",
   "private": true,
   "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
     "zod": "^4"

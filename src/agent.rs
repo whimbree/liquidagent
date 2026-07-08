@@ -247,4 +247,57 @@ mod tests {
         assert_eq!(respawn_delay(5), Duration::from_secs(30)); // capped
         assert_eq!(respawn_delay(60), Duration::from_secs(30)); // no overflow
     }
+
+    /// Rust half of the Rust↔TS wire-protocol parity guard (the TS half is
+    /// workspace/agent/protocol.test.ts). Both check their own definitions
+    /// against the shared workspace/agent/protocol.json, so drift on either
+    /// side fails a test.
+    #[test]
+    fn wire_types_match_protocol_json() {
+        use std::collections::BTreeSet;
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("workspace/agent/protocol.json");
+        // Skip gracefully if the harness tree isn't in this build context; the
+        // TS side still guards the contract there.
+        let Ok(raw) = std::fs::read_to_string(&path) else {
+            eprintln!("skipping wire parity: {} not found", path.display());
+            return;
+        };
+        let contract: serde_json::Value =
+            serde_json::from_str(&raw).expect("protocol.json is valid JSON");
+        let contract_set = |key: &str| -> BTreeSet<String> {
+            contract[key]
+                .as_array()
+                .expect("contract key is an array")
+                .iter()
+                .map(|v| v.as_str().expect("contract value is a string").to_string())
+                .collect()
+        };
+        let type_of = |v: serde_json::Value| -> String {
+            v["type"].as_str().expect("serialized variant has a type tag").to_string()
+        };
+
+        let events: BTreeSet<String> = [
+            serde_json::to_value(AgentEvent::Token { id: "i".into(), text: "t".into() }).unwrap(),
+            serde_json::to_value(AgentEvent::Tool { id: "i".into(), name: "n".into(), status: "start".into() }).unwrap(),
+            serde_json::to_value(AgentEvent::Done { id: "i".into(), used_file_tools: false }).unwrap(),
+            serde_json::to_value(AgentEvent::Error { id: "i".into(), message: "m".into() }).unwrap(),
+            serde_json::to_value(AgentEvent::Session { id: "i".into(), session_id: "s".into() }).unwrap(),
+            serde_json::to_value(AgentEvent::Shell { id: "i".into(), action: "open_app".into(), app: "a".into() }).unwrap(),
+            serde_json::to_value(AgentEvent::Notify { id: "i".into(), title: "t".into(), body: "b".into() }).unwrap(),
+        ]
+        .into_iter()
+        .map(type_of)
+        .collect();
+        assert_eq!(events, contract_set("agentEventTypes"), "AgentEvent wire types drifted from protocol.json");
+
+        let requests: BTreeSet<String> = [
+            serde_json::to_value(AgentRequest::Query { id: "i".into(), prompt: "p".into(), session_id: None, model: None }).unwrap(),
+            serde_json::to_value(AgentRequest::Stop { id: "i".into() }).unwrap(),
+        ]
+        .into_iter()
+        .map(type_of)
+        .collect();
+        assert_eq!(requests, contract_set("agentRequestTypes"), "AgentRequest wire types drifted from protocol.json");
+    }
 }

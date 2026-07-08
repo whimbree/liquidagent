@@ -1,9 +1,19 @@
 import { z } from "zod";
+import {
+  conversationId,
+  type AgentEventType,
+  type ConversationId,
+  type ShellAction,
+  type ToolStatus,
+} from "./protocol";
 
 /**
  * The IPC protocol between the Rust supervisor and the agent harness.
  * Requests arrive on stdin, events leave on stdout — one JSON object per line.
  * Zod-validated at this boundary per the project code standards.
+ *
+ * The closed sets (event/request types, tool status, shell action) come from
+ * protocol.ts and are parity-checked against the Rust side; ids are branded.
  */
 
 export const AgentRequestSchema = z.discriminatedUnion("type", [
@@ -17,16 +27,26 @@ export const AgentRequestSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("stop"), id: z.string() }),
 ]);
 
-export type AgentRequest = z.infer<typeof AgentRequestSchema>;
+/**
+ * The validated request. Zod checks the shape; the `id` brand is a compile-time
+ * refinement applied at the read boundary (see readRequests).
+ */
+export type AgentRequest =
+  | { type: "query"; id: ConversationId; prompt: string; session_id?: string; model?: string }
+  | { type: "stop"; id: ConversationId };
 
 export type AgentEvent =
-  | { type: "token"; id: string; text: string }
-  | { type: "tool"; id: string; name: string; status: "start" | "done" }
-  | { type: "done"; id: string; used_file_tools: boolean }
-  | { type: "error"; id: string; message: string }
-  | { type: "session"; id: string; session_id: string }
-  | { type: "shell"; id: string; action: "open_app"; app: string }
-  | { type: "notify"; id: string; title: string; body: string };
+  | { type: "token"; id: ConversationId; text: string }
+  | { type: "tool"; id: ConversationId; name: string; status: ToolStatus }
+  | { type: "done"; id: ConversationId; used_file_tools: boolean }
+  | { type: "error"; id: ConversationId; message: string }
+  | { type: "session"; id: ConversationId; session_id: string }
+  | { type: "shell"; id: ConversationId; action: ShellAction; app: string }
+  | { type: "notify"; id: ConversationId; title: string; body: string };
+
+// Compile-time check: every event's discriminant is a known wire type.
+type _EventsAreWireTypes = AgentEvent["type"] extends AgentEventType ? true : never;
+const _eventsAreWireTypes: _EventsAreWireTypes = true;
 
 /** stdout is the IPC channel — events only. Human-readable logging goes to stderr. */
 export function emit(event: AgentEvent): void {
@@ -54,6 +74,7 @@ export async function* readRequests(): AsyncGenerator<AgentRequest> {
       logToStderr(`ignoring invalid request: ${parsed.error.message}`);
       continue;
     }
-    yield parsed.data;
+    // Brand the conversation id at the boundary.
+    yield { ...parsed.data, id: conversationId(parsed.data.id) } as AgentRequest;
   }
 }

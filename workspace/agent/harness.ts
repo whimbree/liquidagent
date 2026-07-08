@@ -18,6 +18,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { emit, logToStderr, readRequests, type AgentEvent } from "./ipc";
+import { assertNever, conversationId, type ConversationId } from "./protocol";
 import { buildSystemPromptAppend } from "./prompt";
 
 const MAX_TURNS_PER_QUERY = 50;
@@ -43,7 +44,7 @@ const claudeBinary = resolveClaudeBinary();
 
 let activeQuery: Query | null = null;
 /** Conversation id of the running query — shell tool events carry it. */
-let currentQueryId = "0";
+let currentQueryId: ConversationId = conversationId("0");
 
 /**
  * In-process MCP server giving the agent control of the shell. Tool calls
@@ -101,7 +102,7 @@ async function startQuery(prompt: string, resumeSessionId?: string, model?: stri
 }
 
 /** Translate one SDK message into zero or more IPC events. */
-function toEvents(requestId: string, message: SDKMessage, sawFileTool: { value: boolean }): AgentEvent[] {
+function toEvents(requestId: ConversationId, message: SDKMessage, sawFileTool: { value: boolean }): AgentEvent[] {
   switch (message.type) {
     case "system":
       if (message.subtype === "init") {
@@ -141,7 +142,7 @@ function toEvents(requestId: string, message: SDKMessage, sawFileTool: { value: 
   }
 }
 
-async function runQuery(requestId: string, prompt: string, sessionId?: string, model?: string): Promise<void> {
+async function runQuery(requestId: ConversationId, prompt: string, sessionId?: string, model?: string): Promise<void> {
   const sawFileTool = { value: false };
   currentQueryId = requestId;
   const q = await startQuery(prompt, sessionId, model);
@@ -170,7 +171,7 @@ if (Bun.argv[2] === "--once") {
   }
   const sawFileTool = { value: false };
   for await (const message of await startQuery(prompt)) {
-    for (const event of toEvents("once", message, sawFileTool)) {
+    for (const event of toEvents(conversationId("once"), message, sawFileTool)) {
       if (event.type === "token") process.stdout.write(event.text);
       if (event.type === "tool") logToStderr(`tool: ${event.name}`);
       if (event.type === "error") logToStderr(`error: ${event.message}`);
@@ -200,6 +201,8 @@ async function main(): Promise<void> {
         }
         break;
       }
+      default:
+        assertNever(request);
     }
   }
 }

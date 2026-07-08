@@ -63,7 +63,7 @@
           dontBuild = true;
           installPhase = ''
             mkdir -p $out/share/liquid-agent
-            cp *.ts package.json tsconfig.json bun.lock $out/share/liquid-agent/
+            cp *.ts protocol.json package.json tsconfig.json bun.lock $out/share/liquid-agent/
             ln -s ${agent-deps} $out/share/liquid-agent/node_modules
           '';
         };
