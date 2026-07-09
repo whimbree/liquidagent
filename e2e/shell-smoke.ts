@@ -74,6 +74,22 @@ try {
   await page.click("#chatclose");
   check("an app the agent built appears on the home screen", true);
 
+  // mobile (clean state, before the desktop window tests): a fullscreen app hides
+  // the floating chat FAB — it used to overlap the app's own bottom nav — and
+  // relocates chat into the app's top bar.
+  await page.setViewport({ width: 390, height: 844, isMobile: true, hasTouch: true });
+  await page.waitForSelector('.appicon[data-id="board"]', { timeout: 5000 }); // grid re-renders on resize
+  await page.evaluate(() => (document.querySelector('.appicon[data-id="board"]') as HTMLElement).click());
+  await page.waitForFunction(() => document.getElementById("mobileapp")!.classList.contains("open"), { timeout: 5000 });
+  const fabHidden = await page.$eval("#chatfab", (e) => getComputedStyle(e).display === "none");
+  const topBarChat = await page.$eval("#mobilechat", (e) => getComputedStyle(e).display !== "none");
+  check("mobile: app opens fullscreen, FAB hidden, chat in the top bar", fabHidden && topBarChat);
+  await page.click("#mobileback");
+  await page.waitForFunction(() => !document.getElementById("mobileapp")!.classList.contains("open"), { timeout: 3000 });
+  check("mobile: back returns home and restores the FAB", await page.$eval("#chatfab", (e) => getComputedStyle(e).display !== "none"));
+  await page.setViewport({ width: 1200, height: 800 }); // back to desktop for the WM tests
+  await page.waitForSelector('.appicon[data-id="board"]', { timeout: 5000 }); // grid re-renders on resize
+
   // open it -> window; minimize -> dock -> restore; maximize
   await page.evaluate(() => (document.querySelector('.appicon[data-id="board"]') as HTMLElement).click());
   await page.waitForSelector(".window:not(.chatwin)", { timeout: 5000 });

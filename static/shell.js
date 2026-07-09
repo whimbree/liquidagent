@@ -227,7 +227,9 @@ $("bell").onclick = async () => {
 /* ---------- unread state ---------- */
 const unread = new Set();
 function updateUnreadUi() {
-  $("chatfab").classList.toggle("unread", unread.size > 0);
+  const has = unread.size > 0;
+  $("chatfab").classList.toggle("unread", has);
+  $("mobilechat").classList.toggle("unread", has); // in-app top-bar chat button
 }
 
 /* ---------- agent-busy indicator (serialized worker) ---------- */
@@ -1067,12 +1069,16 @@ function openMobileApp(app) {
   $("mobiletitle").textContent = `${app.icon} ${app.name}`;
   $if("mobileframe").src = `/app/${encodeURIComponent(app.id)}/`;
   $("mobileapp").classList.add("open");
+  document.body.classList.add("app-open"); // hides the FAB; chat moves to the top bar
 }
-$("mobileback").onclick = () => {
+function closeMobileApp() {
   $("mobileapp").classList.remove("open");
+  document.body.classList.remove("app-open");
   $if("mobileframe").src = "about:blank";
-};
+}
+$("mobileback").onclick = closeMobileApp;
 $("mobilereload").onclick = () => { $if("mobileframe").src = $if("mobileframe").src; };
+$("mobilechat").onclick = () => summonChat(); // reach liquid without leaving the app
 
 /* ---------- chat ---------- */
 /** @type {Conversation[]} */

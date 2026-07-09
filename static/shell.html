@@ -103,10 +103,16 @@
   #mobileapp { display:none; position:absolute; inset:0; z-index:40; background:var(--bg);
                flex-direction:column; }
   #mobileapp.open { display:flex; }
-  #mobileapp header { display:flex; align-items:center; gap:0.6rem; padding:0.5rem 0.8rem;
+  #mobileapp header { display:flex; align-items:center; gap:0.4rem;
+                      padding:calc(0.45rem + env(safe-area-inset-top)) 0.7rem 0.45rem;
                       border-bottom:1px solid var(--line); }
-  #mobileapp header b { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  #mobileapp header button { background:transparent; color:#c9c9d4; padding:0.2rem 0.5rem; }
+  #mobileapp header b { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+                        font-size:0.9rem; }
+  #mobileapp header button { background:transparent; color:#c9c9d4; padding:0.25rem 0.5rem;
+                             font-size:1.15rem; border-radius:8px; position:relative; }
+  #mobileapp header button:active { background:#ffffff14; }
+  #mobilechat.unread::after { content:""; position:absolute; top:0.1rem; right:0.15rem;
+                    width:0.55rem; height:0.55rem; border-radius:50%; background:#e0645c; }
   #mobileapp iframe { flex:1; border:0; width:100%; }
 
   /* chat */
@@ -119,6 +125,7 @@
                     height:0.7rem; border-radius:50%; background:#e0645c; display:none; }
   #chatfab.unread::after { display:block; }
   body.chat-open #chatfab { display:none; } /* never fight the keyboard's enter key */
+  body.app-open #chatfab { display:none; }  /* a fullscreen app owns the screen; chat lives in its top bar */
   .conv .unreaddot { width:0.5rem; height:0.5rem; border-radius:50%; background:#e0645c;
                      align-self:center; flex-shrink:0; }
   #stopbtn { background:#5c2b2b; }
@@ -388,8 +395,9 @@
   </div>
 
   <div id="mobileapp">
-    <header><button id="mobileback">←</button><b id="mobiletitle"></b>
-      <button id="mobilereload">↻</button></header>
+    <header><button id="mobileback" title="Back to home">←</button><b id="mobiletitle"></b>
+      <button id="mobilechat" title="Chat with liquid">💬</button>
+      <button id="mobilereload" title="Reload">↻</button></header>
     <iframe id="mobileframe" title="app"></iframe>
   </div>
 
