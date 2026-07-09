@@ -11,7 +11,7 @@ mod scheduler;
 mod ws;
 
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -61,9 +61,6 @@ const WORKSPACE_TEMPLATE: &[(&str, &str)] = &[
     ("apps/stronglifts/backend/index.ts", include_str!("../default-workspace/apps/stronglifts/backend/index.ts")),
 ];
 
-// Phase 0 binds localhost only; your reverse proxy (with SSO) fronts it.
-const BIND_ADDR: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
-
 const CLIENT_EVENT_CAPACITY: usize = 1024;
 
 pub type ProxyClient = hyper_util::client::legacy::Client<
@@ -101,6 +98,17 @@ async fn main() -> anyhow::Result<()> {
     init_workspace(&config.workspace_dir)?;
 
     let db = Db::open(&config.data_dir.join("liquid.db"))?;
+
+    // Reproducible-deploy convenience: seed an initial login password if one is
+    // provided and none is set yet. Never overrides an existing password, so a
+    // later change from the UI sticks across restarts.
+    if let Some(ref pw) = config.initial_password {
+        if !auth::password_is_set(&db)? {
+            auth::set_password(&db, pw).context("seeding LIQUID_INITIAL_PASSWORD")?;
+            info!("seeded initial password from LIQUID_INITIAL_PASSWORD");
+        }
+    }
+
     let agent = Agent::start(&config);
     let (client_events, _) = broadcast::channel(CLIENT_EVENT_CAPACITY);
 
@@ -255,7 +263,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(protected)
         .with_state(state);
 
-    let addr = SocketAddr::new(BIND_ADDR, config.port);
+    let addr = SocketAddr::new(config.host, config.port);
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("binding {addr}"))?;

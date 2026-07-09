@@ -1,8 +1,13 @@
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::PathBuf;
 
 use anyhow::Context;
 
 pub const DEFAULT_PORT: u16 = 3000;
+/// Bind localhost by default: Phase 0/1 assumes a reverse proxy (with SSO or at
+/// least TLS) fronts the supervisor. Deployments that sit behind such a proxy
+/// on another host (e.g. a microVM reached from a gateway VM) set `LIQUID_HOST`.
+pub const DEFAULT_HOST: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
 /// Dev defaults are anchored to the repo root at compile time so `cargo run`
 /// works from any directory. Deployments (the NixOS module) always set the
@@ -12,6 +17,13 @@ const REPO_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 #[derive(Clone, Debug)]
 pub struct Config {
     pub port: u16,
+    /// Address the supervisor binds. Defaults to localhost; set `LIQUID_HOST`
+    /// (e.g. `0.0.0.0`) only when a trusted reverse proxy fronts it.
+    pub host: IpAddr,
+    /// If set and no password is configured yet, seed this as the initial login
+    /// password on boot (`LIQUID_INITIAL_PASSWORD`). Meant for reproducible
+    /// deploys; the user should change it after first login.
+    pub initial_password: Option<String>,
     /// The directory the agent is allowed to modify. Created + `git init`ed on boot.
     pub workspace_dir: PathBuf,
     /// Platform state: SQLite database. NOT agent-writable.
@@ -33,6 +45,18 @@ impl Config {
                 .with_context(|| format!("LIQUID_PORT is not a valid port: {raw}"))?,
             Err(_) => DEFAULT_PORT,
         };
+
+        let host = match std::env::var("LIQUID_HOST") {
+            Ok(raw) => raw
+                .parse::<IpAddr>()
+                .with_context(|| format!("LIQUID_HOST is not a valid IP address: {raw}"))?,
+            Err(_) => DEFAULT_HOST,
+        };
+
+        // Empty is treated as unset so an unpopulated EnvironmentFile line is harmless.
+        let initial_password = std::env::var("LIQUID_INITIAL_PASSWORD")
+            .ok()
+            .filter(|s| !s.is_empty());
 
         let workspace_dir = std::env::var("LIQUID_WORKSPACE_DIR")
             .map(PathBuf::from)
@@ -69,6 +93,8 @@ impl Config {
 
         Ok(Self {
             port,
+            host,
+            initial_password,
             workspace_dir,
             data_dir,
             agent_command,

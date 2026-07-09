@@ -19,7 +19,30 @@ in
     port = lib.mkOption {
       type = lib.types.port;
       default = 3000;
-      description = "Port the supervisor listens on (localhost only).";
+      description = "Port the supervisor listens on.";
+    };
+
+    host = lib.mkOption {
+      type = lib.types.str;
+      default = "127.0.0.1";
+      example = "0.0.0.0";
+      description = ''
+        Address the supervisor binds. Localhost by default. Only widen this
+        (e.g. 0.0.0.0) when a trusted reverse proxy fronts it — the supervisor
+        has no transport security or SSO of its own.
+      '';
+    };
+
+    initialPassword = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = ''
+        If set and no password exists yet, seed this as the initial login
+        password on first boot. Never overrides a password already set (so a
+        later change from the UI persists). NOTE: a literal string here lands
+        world-readable in the nix store — prefer LIQUID_INITIAL_PASSWORD in
+        `environmentFile` for anything sensitive, and change it after first login.
+      '';
     };
 
     dataDir = lib.mkOption {
@@ -95,6 +118,7 @@ in
       environment = {
         HOME = cfg.dataDir;
         LIQUID_PORT = toString cfg.port;
+        LIQUID_HOST = cfg.host;
         LIQUID_WORKSPACE_DIR = "${cfg.dataDir}/workspace";
         LIQUID_DATA_DIR = "${cfg.dataDir}/data";
         LIQUID_AGENT_CMD =
