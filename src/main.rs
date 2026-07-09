@@ -398,7 +398,16 @@ async fn record_agent_events(state: AppState) {
                     warn!("agent image: write failed");
                     continue;
                 }
-                // Persist on a standalone assistant message so it survives reload.
+                // Flush any streamed-so-far reply text first, so persisted order
+                // matches what the human watched live: pre-image text, the image,
+                // then the rest of the reply (persisted at done). The shell resets
+                // its own stream buffer on this event for the same reason.
+                if let Some(pre) = buffers.remove(&conversation_id).filter(|s| !s.is_empty()) {
+                    if let Err(err) = state.db.append_message(conversation_id, "assistant", &pre) {
+                        warn!("agent image: flushing streamed text failed: {err:#}");
+                    }
+                }
+                // The image itself rides a standalone assistant message.
                 match state
                     .db
                     .append_message(conversation_id, "assistant", "")

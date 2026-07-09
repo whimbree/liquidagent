@@ -77,16 +77,50 @@ try {
   await page.waitForFunction(() => !!document.querySelector("#log .msg.user .athumbs img"), { timeout: 6000 }).catch(() => {});
   ok("the image still renders after a reload", await page.$eval("#log", (l) => !!l.querySelector(".msg.user .athumbs img")));
 
-  // the OTHER direction: the agent can push an image into your chat (screenshot
-  // tool → image event), and clicking it opens a resizable in-shell window.
+  // the OTHER direction: the agent pushes an image into your chat MID-REPLY
+  // (streams preamble → screenshot tool → streams the rest). The stream must
+  // split around the image with no duplicated text, live and after reload.
   await page.type("#input", "take a screenshot and show me");
   await page.$eval("#composer", (f) => (f as HTMLFormElement).requestSubmit());
   await page.waitForFunction(() => document.querySelectorAll("#log .msg.bot .athumbs img").length >= 1, { timeout: 10000 });
   ok("the agent can push an image into your chat", true);
+  // wait for the reply to FINISH (done hides the stop button), not just begin —
+  // asserting or reloading mid-stream would race the tail of the reply.
+  await page.waitForFunction(() => {
+    const last = [...document.querySelectorAll("#log .msg.bot")].at(-1)?.textContent || "";
+    return /You said/.test(last) && (document.getElementById("stopbtn") as HTMLElement).hidden;
+  }, { timeout: 15000 });
+  const order = () => page.$$eval("#log .msg.bot", (els) => els.slice(-3).map((e) => {
+    if (e.querySelector(".athumbs img")) return "image";
+    const t = e.textContent || "";
+    return /Here is the screenshot/.test(t) && !/You said/.test(t) ? "pre"
+      : /You said/.test(t) && !/Here is the screenshot/.test(t) ? "post" : "mixed:" + t.slice(0, 40);
+  }));
+  ok("the reply splits cleanly around the image (pre → image → post, no duplication)",
+    JSON.stringify(await order()) === JSON.stringify(["pre", "image", "post"]));
+
+  // clicking the image opens a real desk window (shared WM: drag/snap/resize)
   await page.click("#log .msg.bot .athumbs img");
   await page.waitForSelector(".imgwin", { timeout: 4000 });
-  ok("clicking opens a resizable in-shell image window",
-    await page.$eval(".imgwin", (e) => getComputedStyle(e).resize === "both" && !!e.querySelector(".imgwrap img")));
+  ok("clicking opens the image in a desk window (resizable)",
+    await page.$eval(".imgwin", (e) => e.classList.contains("window") && getComputedStyle(e).resize === "both" && !!e.querySelector(".imgwrap img")));
+  const beforeX = await page.$eval(".imgwin", (e) => (e as HTMLElement).offsetLeft);
+  const bar = (await page.$(".imgwin .titlebar"))!;
+  const bb = (await bar.boundingBox())!;
+  await page.mouse.move(bb.x + 60, bb.y + 8); await page.mouse.down();
+  await page.mouse.move(bb.x + 180, bb.y + 60); await page.mouse.up();
+  ok("the image window drags like any window", (await page.$eval(".imgwin", (e) => (e as HTMLElement).offsetLeft)) !== beforeX);
+  await page.evaluate(() => document.querySelector(".imgwin .tname")!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+  ok("dblclick the titlebar maximizes it (shared WM)", await page.$eval(".imgwin", (e) => e.classList.contains("maximized")));
+  await page.$eval(".imgwin .close", (b) => (b as HTMLElement).click());
+  ok("the image window closes", (await page.$$(".imgwin")).length === 0);
+
+  // persisted structure survives a reload: pre-text, image, post-text
+  await page.reload({ waitUntil: "networkidle0" });
+  await page.waitForFunction(() => document.getElementById("shell")!.classList.contains("active"), { timeout: 20000 });
+  await page.click("#chatfab");
+  await page.waitForFunction(() => !!document.querySelector("#log .msg.bot .athumbs img"), { timeout: 6000 }).catch(() => {});
+  ok("after a reload the split order is preserved", JSON.stringify(await order()) === JSON.stringify(["pre", "image", "post"]));
 
   ok("no page errors", errs.length === 0); if (errs.length) console.log("  errors:", errs.slice(0, 4));
 } finally {

@@ -1497,6 +1497,11 @@ function connect() {
       streams.set(ev.conversation_id, s);
     } else if (ev.type === "done" || ev.type === "error") {
       streams.delete(ev.conversation_id);
+    } else if (ev.type === "attachment") {
+      // The server flushed the streamed-so-far text into its own message when the
+      // image arrived; reset our buffer to match, so the bubble AFTER the image
+      // holds only post-image text (otherwise it would re-render the whole reply).
+      streams.delete(ev.conversation_id);
     }
     // Fan the event out to any chat windows bound to this conversation.
     for (const w of chatWins.values()) chatWinApply(w, ev);
@@ -1600,30 +1605,30 @@ function attachmentThumbs(items) {
   }
   return wrap;
 }
-/** A draggable, resizable window previewing an image full-size. @param {string} src @param {string} [name] */
+/** Preview an image in a real desk window — the same .window/WM machinery as
+ *  apps and chats (drag, edge snaps, dblclick-maximize, focus/z-order, CSS
+ *  resize), not a bespoke overlay. Ephemeral: not in the dock or saved layout.
+ *  @param {string} src @param {string} [name] */
 function openImageWindow(src, name) {
-  const win = document.createElement("div"); win.className = "imgwin";
-  win.style.left = Math.max(8, (innerWidth - 512) / 2) + "px";
-  win.style.top = Math.max(8, (innerHeight - 416) / 3) + "px";
-  const bar = document.createElement("div"); bar.className = "titlebar";
-  const title = document.createElement("b"); title.textContent = name || "Image";
-  const full = document.createElement("button"); full.textContent = "⤢"; full.title = "Open full size in a tab"; full.onclick = () => window.open(src, "_blank");
-  const close = document.createElement("button"); close.textContent = "✕"; close.title = "Close"; close.onclick = () => win.remove();
-  bar.append(title, full, close);
-  const wrap = document.createElement("div"); wrap.className = "imgwrap";
-  const img = document.createElement("img"); img.src = src; wrap.append(img);
-  win.append(bar, wrap); document.body.append(win);
-  bar.addEventListener("pointerdown", (e) => {
-    if (e.target !== bar && e.target !== title) return; // let the buttons work
-    e.preventDefault();
-    const sx = e.clientX - win.offsetLeft, sy = e.clientY - win.offsetTop;
-    const move = (/** @type {PointerEvent} */ ev) => {
-      win.style.left = Math.max(0, Math.min(ev.clientX - sx, innerWidth - 40)) + "px";
-      win.style.top = Math.max(0, Math.min(ev.clientY - sy, innerHeight - 20)) + "px";
-    };
-    const up = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", up); };
-    addEventListener("pointermove", move); addEventListener("pointerup", up);
-  });
+  const win = document.createElement("div");
+  win.className = "window imgwin";
+  const w = Math.min(560, innerWidth - 32), h = Math.min(460, innerHeight - 32);
+  win.style.width = w + "px"; win.style.height = h + "px";
+  win.style.left = Math.max(8, (innerWidth - w) / 2) + "px";
+  win.style.top = Math.max(8, (innerHeight - h) / 3) + "px";
+  win.innerHTML = `
+    <div class="titlebar"><span class="ticon">🖼</span><span class="tname"></span>
+      <button class="full" title="Open full size in a tab">⤢</button>
+      <button class="close" title="Close">✕</button></div>
+    <div class="imgwrap"><img alt="attachment preview"></div>`;
+  /** @type {HTMLElement} */ (win.querySelector(".tname")).textContent = name || "Image";
+  /** @type {HTMLImageElement} */ (win.querySelector(".imgwrap img")).src = src;
+  /** @type {HTMLElement} */ (win.querySelector(".full")).onclick = () => window.open(src, "_blank");
+  /** @type {HTMLElement} */ (win.querySelector(".close")).onclick = () => win.remove();
+  win.addEventListener("pointerdown", () => bringToFront(win));
+  document.body.append(win);
+  enableWinDrag(win);
+  bringToFront(win);
   return win;
 }
 $("attachbtn").onclick = () => $in("attachinput").click();

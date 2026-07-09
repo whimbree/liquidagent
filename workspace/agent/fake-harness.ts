@@ -31,8 +31,16 @@ for await (const request of readRequests()) {
   emit({ type: "tool", id: request.id, name: "FakeTool", status: "start" });
   await Bun.sleep(TOKEN_DELAY_MS * 4);
   emit({ type: "tool", id: request.id, name: "FakeTool", status: "done" });
-  // Simulate the agent's screenshot tool showing the human an image.
-  if (/screenshot|show me/i.test(request.prompt)) {
+  // Simulate the screenshot tool with REALISTIC ordering: the model streams some
+  // preamble text, THEN the tool fires mid-turn, then the reply continues. This
+  // interleaving is what the split-stream handling (supervisor buffer flush +
+  // shell stream reset) exists for — keep it, or the tests go blind to it.
+  const shot = /screenshot|show me/i.test(request.prompt);
+  if (shot) {
+    for (const word of "Here is the screenshot you asked for:".split(" ")) {
+      emit({ type: "token", id: request.id, text: `${word} ` });
+      await Bun.sleep(TOKEN_DELAY_MS);
+    }
     emit({ type: "image", id: request.id, mime: "image/png", data: FAKE_PNG });
   }
   for (const word of words) {
