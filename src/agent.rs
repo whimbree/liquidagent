@@ -150,6 +150,8 @@ async fn manage_agent_process(
         let mut child = match Command::new(program)
             .args(args)
             .env("LIQUID_WORKSPACE_DIR", &config.workspace_dir)
+            // So the harness's screenshot tool can reach apps at /app/<id>/.
+            .env("LIQUID_PORT", config.port.to_string())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

@@ -121,6 +121,14 @@ try {
   await f2.waitForFunction(() => document.querySelector("#main .h") !== null, { timeout: 8000 }).catch(() => {});
   ok("after wiping the local cache, history restores from the SQL DB", await f2.$eval("#main", (m) => !!m.querySelector(".h")));
 
+  // the agent's screenshot tool captures this app as a real PNG (headless chromium)
+  process.env.LIQUID_PORT = String(PORT);
+  process.env.LIQUID_CHROME = CHROME;
+  const { captureAppScreenshot } = await import("../workspace/agent/screenshot.ts");
+  const shot = await captureAppScreenshot("stronglifts", "", 390, 780);
+  ok("the agent screenshot tool captures the app as a PNG",
+    shot.ok && Buffer.from(shot.data, "base64").length > 1000 && Buffer.from(shot.data, "base64")[0] === 0x89);
+
   ok("no page errors", errs.length === 0);
   if (errs.length) console.log("  errors:", errs.slice(0, 5));
 } finally {

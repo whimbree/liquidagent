@@ -99,6 +99,18 @@ in
       '';
     };
 
+    chromiumPackage = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = null;
+      defaultText = lib.literalExpression "null (screenshot tool disabled)";
+      example = lib.literalExpression "pkgs.chromium";
+      description = ''
+        Chromium package enabling the agent's `screenshot` tool (headless capture
+        of apps it builds, for visual debugging). Sets LIQUID_CHROME. Null = the
+        tool reports "no chromium available" if invoked.
+      '';
+    };
+
     autoUpdate = {
       enable = lib.mkEnableOption ''
         periodic self-update: a timer builds the latest liquid from `flake` and
@@ -141,7 +153,7 @@ in
         pkgs.git
         pkgs.bun
         cfg.claudePackage
-      ];
+      ] ++ lib.optional (cfg.chromiumPackage != null) cfg.chromiumPackage;
 
       environment = {
         HOME = cfg.dataDir;
@@ -160,6 +172,9 @@ in
           "${pkgs.bun}/bin/bun run ${agentBase}/share/liquid-agent/review.ts";
         LIQUID_CLAUDE_BIN = "${cfg.claudePackage}/bin/claude";
         LIQUID_PIPELINE_MODE = cfg.pipelineMode;
+      } // lib.optionalAttrs (cfg.chromiumPackage != null) {
+        # Enables the agent's screenshot tool (headless chromium capture).
+        LIQUID_CHROME = "${cfg.chromiumPackage}/bin/chromium";
       };
 
       serviceConfig = {

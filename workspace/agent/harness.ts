@@ -21,6 +21,7 @@ import { z } from "zod";
 import { emit, logToStderr, readRequests, type AgentEvent, type Attachment } from "./ipc";
 import { assertNever, conversationId, type ConversationId } from "./protocol";
 import { buildSystemPromptAppend } from "./prompt";
+import { captureAppScreenshot } from "./screenshot";
 
 const MAX_TURNS_PER_QUERY = 50;
 const FILE_TOOL_NAMES = new Set(["Write", "Edit", "NotebookEdit"]);
@@ -77,6 +78,26 @@ const shellServer = createSdkMcpServer({
       async ({ title, body }) => {
         emit({ type: "notify", id: currentQueryId, title, body });
         return { content: [{ type: "text", text: "Notification sent." }] };
+      },
+    ),
+    tool(
+      "screenshot",
+      "See one of your apps as it actually renders in a real browser. Use this " +
+        "after building or changing an app to check its layout/visuals, or to " +
+        "debug a rendering bug you can't diagnose from the code alone. Returns a " +
+        "PNG image of the app. Defaults to a phone-sized viewport (390×780).",
+      {
+        app: z.string().describe("The app id — its directory name under apps/"),
+        path: z.string().optional().describe("Route within the app, e.g. \"\" or \"index.html\""),
+        width: z.number().optional().describe("Viewport width in px (default 390, a phone)"),
+        height: z.number().optional().describe("Viewport height in px (default 780)"),
+      },
+      async ({ app, path, width, height }) => {
+        const shot = await captureAppScreenshot(app, path ?? "", width ?? 390, height ?? 780);
+        if (!shot.ok) {
+          return { content: [{ type: "text", text: `Could not screenshot ${app}: ${shot.error}` }], isError: true };
+        }
+        return { content: [{ type: "image", data: shot.data, mimeType: "image/png" }] };
       },
     ),
   ],
