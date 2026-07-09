@@ -23,6 +23,14 @@ CREATE TABLE IF NOT EXISTS messages (
 );
 CREATE INDEX IF NOT EXISTS idx_messages_conversation
     ON messages(conversation_id, id);
+CREATE TABLE IF NOT EXISTS attachments (
+    id              TEXT PRIMARY KEY,
+    conversation_id INTEGER NOT NULL,
+    message_id      INTEGER NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+    mime            TEXT NOT NULL,
+    created_at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_message ON attachments(message_id);
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -64,6 +72,16 @@ pub struct StoredMessage {
     pub role: String,
     pub content: String,
     pub created_at: i64,
+    /// Image attachments on this message (rendered as thumbnails in the shell).
+    #[serde(default)]
+    pub attachments: Vec<AttachmentRef>,
+}
+
+/// A reference to a stored attachment: its id (also the filename) and mime.
+#[derive(Clone, Debug, Serialize)]
+pub struct AttachmentRef {
+    pub id: String,
+    pub mime: String,
 }
 
 /// SQLite handle. rusqlite is sync; a Mutex is plenty at single-user scale —
@@ -209,7 +227,8 @@ impl Db {
 
     // --- messages ------------------------------------------------------------
 
-    pub fn append_message(&self, conversation_id: i64, role: &str, content: &str) -> anyhow::Result<()> {
+    /// Append a message and return its row id (used to link attachments).
+    pub fn append_message(&self, conversation_id: i64, role: &str, content: &str) -> anyhow::Result<i64> {
         let ts = now();
         let conn = self.lock();
         conn.execute(
@@ -220,7 +239,25 @@ impl Db {
             "UPDATE conversations SET updated_at = ?2 WHERE id = ?1",
             rusqlite::params![conversation_id, ts],
         )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Record an image attachment on a message. The image bytes live in a file
+    /// named `id` under the attachments dir; only metadata is in the DB.
+    pub fn add_attachment(&self, id: &str, conversation_id: i64, message_id: i64, mime: &str) -> anyhow::Result<()> {
+        self.lock().execute(
+            "INSERT INTO attachments (id, conversation_id, message_id, mime, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, conversation_id, message_id, mime, now()],
+        )?;
         Ok(())
+    }
+
+    /// The mime of a stored attachment (also confirms it exists) — for serving.
+    pub fn attachment_mime(&self, id: &str) -> anyhow::Result<Option<String>> {
+        Ok(self
+            .lock()
+            .query_row("SELECT mime FROM attachments WHERE id = ?1", [id], |row| row.get(0))
+            .optional()?)
     }
 
     pub fn list_messages(&self, conversation_id: i64) -> anyhow::Result<Vec<StoredMessage>> {
@@ -228,15 +265,24 @@ impl Db {
         let mut stmt = conn.prepare(
             "SELECT id, role, content, created_at FROM messages WHERE conversation_id = ?1 ORDER BY id",
         )?;
-        let rows = stmt.query_map([conversation_id], |row| {
-            Ok(StoredMessage {
-                id: row.get(0)?,
-                role: row.get(1)?,
-                content: row.get(2)?,
-                created_at: row.get(3)?,
-            })
-        })?;
-        Ok(rows.collect::<Result<_, _>>()?)
+        let mut messages: Vec<StoredMessage> = stmt
+            .query_map([conversation_id], |row| {
+                Ok(StoredMessage {
+                    id: row.get(0)?,
+                    role: row.get(1)?,
+                    content: row.get(2)?,
+                    created_at: row.get(3)?,
+                    attachments: Vec::new(),
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        let mut att = conn.prepare("SELECT id, mime FROM attachments WHERE message_id = ?1 ORDER BY rowid")?;
+        for m in &mut messages {
+            m.attachments = att
+                .query_map([m.id], |row| Ok(AttachmentRef { id: row.get(0)?, mime: row.get(1)? }))?
+                .collect::<Result<_, _>>()?;
+        }
+        Ok(messages)
     }
 
     // --- settings ------------------------------------------------------------

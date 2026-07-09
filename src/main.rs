@@ -78,6 +78,8 @@ pub struct AppState {
     pub workspace_dir: PathBuf,
     /// Where apps are served from and backends run: the deployed worktree.
     pub served_dir: PathBuf,
+    /// $DATA_DIR/attachments — image files pasted into chat. Metadata in the DB.
+    pub attachments_dir: PathBuf,
     pub apps_cache: Arc<Mutex<Vec<apps::AppManifest>>>,
     pub backends: Arc<backends::BackendManager>,
     pub deploy: Arc<deploy::DeployManager>,
@@ -134,12 +136,15 @@ async fn main() -> anyhow::Result<()> {
     // Apps are served from the deployed worktree, not the live workspace.
     let initial_apps = apps::scan_apps(&served_dir);
     sync_backends(&backends, &initial_apps);
+    let attachments_dir = config.data_dir.join("attachments");
+    std::fs::create_dir_all(&attachments_dir).context("creating attachments dir")?;
     let state = AppState {
         db,
         agent,
         client_events,
         workspace_dir: config.workspace_dir.clone(),
         served_dir,
+        attachments_dir,
         apps_cache: Arc::new(Mutex::new(initial_apps)),
         backends,
         deploy,
@@ -164,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/conversations/{id}/model",
             axum::routing::put(api::set_conversation_model),
         )
+        .route("/api/attachments/{id}", get(api::serve_attachment))
         .route(
             "/api/auth/change_password",
             axum::routing::post(api::auth_change_password),

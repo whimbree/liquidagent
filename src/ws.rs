@@ -16,10 +16,58 @@ enum ClientMessage {
     UserMessage {
         content: String,
         conversation_id: Option<i64>,
+        /// Images pasted/attached into the composer (base64). Validated + stored
+        /// server-side, then forwarded to the model as image content.
+        #[serde(default)]
+        attachments: Vec<crate::agent::Attachment>,
     },
     Stop {
         conversation_id: i64,
     },
+}
+
+const MAX_ATTACHMENTS: usize = 8;
+const MAX_ATTACHMENT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Validate, persist (file + DB row), and return the attachments to forward to
+/// the harness. Bad attachments are skipped with a warning, never fatal.
+async fn store_attachments(
+    state: &AppState,
+    conversation_id: i64,
+    message_id: i64,
+    incoming: Vec<crate::agent::Attachment>,
+) -> Vec<crate::agent::Attachment> {
+    let mut out = Vec::new();
+    for att in incoming.into_iter().take(MAX_ATTACHMENTS) {
+        if !crate::agent::ATTACHMENT_MIMES.contains(&att.mime.as_str()) {
+            tracing::warn!("attachment: unsupported mime {}", att.mime);
+            continue;
+        }
+        let bytes = match data_encoding::BASE64.decode(att.data.as_bytes()) {
+            Ok(b) if b.len() <= MAX_ATTACHMENT_BYTES => b,
+            Ok(b) => {
+                tracing::warn!("attachment: {} bytes over cap", b.len());
+                continue;
+            }
+            Err(err) => {
+                tracing::warn!("attachment: base64 decode failed: {err}");
+                continue;
+            }
+        };
+        let id = data_encoding::HEXLOWER.encode(&rand::random::<[u8; 16]>());
+        let path = state.attachments_dir.join(&id);
+        if let Err(err) = tokio::fs::write(&path, &bytes).await {
+            tracing::warn!("attachment: write failed: {err}");
+            continue;
+        }
+        if let Err(err) = state.db.add_attachment(&id, conversation_id, message_id, &att.mime) {
+            tracing::warn!("attachment: db row failed: {err}");
+            let _ = tokio::fs::remove_file(&path).await;
+            continue;
+        }
+        out.push(att);
+    }
+    out
 }
 
 /// Events the server pushes to every connected client. Fan-out of agent
@@ -127,6 +175,7 @@ async fn handle_client_message(state: &AppState, message: ClientMessage) -> anyh
         ClientMessage::UserMessage {
             content,
             conversation_id,
+            attachments,
         } => {
             let conversation_id = match conversation_id {
                 Some(id) => id,
@@ -140,7 +189,8 @@ async fn handle_client_message(state: &AppState, message: ClientMessage) -> anyh
                     id
                 }
             };
-            state.db.append_message(conversation_id, "user", &content)?;
+            let message_id = state.db.append_message(conversation_id, "user", &content)?;
+            let attachments = store_attachments(state, conversation_id, message_id, attachments).await;
             let session_id = state.db.conversation_session(conversation_id)?;
             state
                 .agent
@@ -149,6 +199,7 @@ async fn handle_client_message(state: &AppState, message: ClientMessage) -> anyh
                     prompt: content,
                     session_id,
                     model: crate::api::effective_model(&state.db, conversation_id),
+                    attachments,
                 })
                 .await?;
         }

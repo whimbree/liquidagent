@@ -181,6 +181,7 @@ async fn fire(state: &AppState, prompt: &str) {
         prompt: prompt.to_string(),
         session_id,
         model: crate::api::effective_model(&state.db, conversation_id),
+        attachments: vec![],
     };
     if let Err(err) = state.agent.send(request).await {
         warn!("could not queue scheduled query: {err:#}");

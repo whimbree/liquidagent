@@ -32,11 +32,26 @@ pub enum AgentRequest {
         /// default. Read live from settings so a change takes effect next query.
         #[serde(skip_serializing_if = "Option::is_none")]
         model: Option<String>,
+        /// Images the human attached to this message (base64), forwarded to the
+        /// model as image content blocks. Empty for a plain text message.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Attachment>,
     },
     Stop {
         id: String,
     },
 }
+
+/// An image the human pasted/attached into chat. `mime` is a supported image
+/// type (validated at the WS boundary); `data` is base64 (no data: prefix).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Attachment {
+    pub mime: String,
+    pub data: String,
+}
+
+/// Image MIME types liquid accepts as chat attachments.
+pub const ATTACHMENT_MIMES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
 
 /// Events received from the agent harness over stdout (one JSON object per line).
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -292,7 +307,7 @@ mod tests {
         assert_eq!(events, contract_set("agentEventTypes"), "AgentEvent wire types drifted from protocol.json");
 
         let requests: BTreeSet<String> = [
-            serde_json::to_value(AgentRequest::Query { id: "i".into(), prompt: "p".into(), session_id: None, model: None }).unwrap(),
+            serde_json::to_value(AgentRequest::Query { id: "i".into(), prompt: "p".into(), session_id: None, model: None, attachments: vec![] }).unwrap(),
             serde_json::to_value(AgentRequest::Stop { id: "i".into() }).unwrap(),
         ]
         .into_iter()

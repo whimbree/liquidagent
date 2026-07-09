@@ -883,12 +883,11 @@ function bubbleIn(logEl, cls, text, asMarkdown = false, ts) {
   syncScrollBtn(logEl);
   return el;
 }
-/** @param {HTMLElement} logEl @param {{role:string,content:string,created_at?:number}} m */
+/** @param {HTMLElement} logEl @param {{role:string,content:string,created_at?:number,attachments?:{id:string,mime:string}[]}} m */
 function renderMsgInto(logEl, m) {
-  if (m.role === "user") bubbleIn(logEl, "user", m.content, false, m.created_at);
-  else if (m.role === "assistant") bubbleIn(logEl, "bot", m.content, true, m.created_at);
-  else if (m.role === "scheduled") bubbleIn(logEl, "scheduled", m.content, false, m.created_at);
-  else bubbleIn(logEl, "errmsg", m.content, false, m.created_at);
+  const cls = m.role === "user" ? "user" : m.role === "assistant" ? "bot" : m.role === "scheduled" ? "scheduled" : "errmsg";
+  const el = bubbleIn(logEl, cls, m.content, m.role === "assistant", m.created_at);
+  if (m.attachments && m.attachments.length) el.append(attachmentThumbs(m.attachments));
 }
 
 // Persist the open windows (conversation + geometry + state). Geometry is only
@@ -1534,16 +1533,97 @@ $("stopbtn").onclick = () => {
     $("status").textContent = "stopping…";
   }
 };
+/* ---------- image attachments: paste / drop / 📎 a screenshot into chat ---------- */
+const ATTACH_MIMES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const MAX_ATTACH = 8, MAX_ATTACH_DIM = 1568;
+/** @typedef {{mime:string,data:string,url:string}} PendingAttachment */
+/** @type {PendingAttachment[]} */
+let pendingAttachments = [];
+
+/** A File → a downscaled base64 attachment (null if it isn't an image). @param {File} file */
+async function fileToAttachment(file) {
+  if (!file.type.startsWith("image/")) return null;
+  /** @type {string} */
+  const dataUrl = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result)); r.onerror = () => rej(new Error("read")); r.readAsDataURL(file); });
+  /** @type {HTMLImageElement} */
+  const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error("decode")); i.src = dataUrl; });
+  let mime = ATTACH_MIMES.includes(file.type) ? file.type : "image/png";
+  let url = dataUrl;
+  if (Math.max(img.width, img.height) > MAX_ATTACH_DIM || mime !== file.type) {
+    const scale = Math.min(1, MAX_ATTACH_DIM / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.max(1, Math.round(img.width * scale)); c.height = Math.max(1, Math.round(img.height * scale));
+    const ctx = c.getContext("2d");
+    if (ctx) { ctx.drawImage(img, 0, 0, c.width, c.height); url = c.toDataURL("image/png"); mime = "image/png"; }
+  }
+  const comma = url.indexOf(",");
+  return { mime, data: comma >= 0 ? url.slice(comma + 1) : url, url };
+}
+/** @param {File[]} files */
+async function addAttachments(files) {
+  for (const f of files) {
+    if (pendingAttachments.length >= MAX_ATTACH) { toast(`Up to ${MAX_ATTACH} images`); break; }
+    try { const a = await fileToAttachment(f); if (a) pendingAttachments.push(a); } catch {}
+  }
+  renderAttachStrip();
+  if (pendingAttachments.length && !$("chat").classList.contains("open")) summonChat();
+}
+function renderAttachStrip() {
+  const strip = $("attachstrip"); strip.innerHTML = "";
+  strip.classList.toggle("has", pendingAttachments.length > 0);
+  pendingAttachments.forEach((a, i) => {
+    const t = document.createElement("div"); t.className = "athumb";
+    const im = document.createElement("img"); im.src = a.url; t.append(im);
+    const x = document.createElement("button"); x.type = "button"; x.textContent = "✕";
+    x.onclick = () => { pendingAttachments.splice(i, 1); renderAttachStrip(); };
+    t.append(x); strip.append(t);
+  });
+}
+function clearAttachments() { pendingAttachments = []; renderAttachStrip(); }
+/** Thumbnail row for a rendered message. @param {{id?:string,mime?:string,url?:string}[]} items */
+function attachmentThumbs(items) {
+  const wrap = document.createElement("div"); wrap.className = "athumbs";
+  for (const it of items) {
+    const im = document.createElement("img");
+    im.src = it.url || `/api/attachments/${it.id}?token=${encodeURIComponent(token ?? "")}`;
+    im.onclick = () => window.open(im.src, "_blank");
+    wrap.append(im);
+  }
+  return wrap;
+}
+$("attachbtn").onclick = () => $in("attachinput").click();
+$("attachinput").addEventListener("change", () => { const f = $in("attachinput").files; if (f) addAttachments([...f]); $in("attachinput").value = ""; });
+$("input").addEventListener("paste", (e) => {
+  const items = /** @type {ClipboardEvent} */ (e).clipboardData?.items; if (!items) return;
+  /** @type {File[]} */ const files = [];
+  for (let i = 0; i < items.length; i++) { const it = items[i]; if (it && it.kind === "file" && it.type.startsWith("image/")) { const f = it.getAsFile(); if (f) files.push(f); } }
+  if (files.length) { e.preventDefault(); addAttachments(files); }
+});
+// drag & drop images anywhere → attach (opens the chat)
+let dragDepth = 0;
+const hasFiles = (/** @type {DragEvent} */ e) => !!e.dataTransfer && e.dataTransfer.types.includes("Files");
+addEventListener("dragenter", (e) => { if (hasFiles(e)) { dragDepth++; $("dragover").classList.add("on"); } });
+addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+addEventListener("dragleave", () => { dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $("dragover").classList.remove("on"); });
+addEventListener("drop", (e) => {
+  dragDepth = 0; $("dragover").classList.remove("on");
+  const files = e.dataTransfer?.files;
+  if (files && files.length) { const imgs = [...files].filter((f) => f.type.startsWith("image/")); if (imgs.length) { e.preventDefault(); addAttachments(imgs); } }
+});
+
 $("composer").onsubmit = (e) => {
   e.preventDefault();
   const content = $in("input").value.trim();
-  if (!content || !ws || ws.readyState !== WebSocket.OPEN) return;
-  bubble("user", content);
+  const atts = pendingAttachments;
+  if ((!content && atts.length === 0) || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const b = bubble("user", content);
+  if (atts.length) b.append(attachmentThumbs(atts.map((a) => ({ url: a.url }))));
   currentBot = null;
   // Queries serialize; if liquid is mid-task, say so instead of looking dead.
   if (busyOn) $("status").textContent = `queued — liquid is finishing ${busyOn}`;
-  ws.send(JSON.stringify({ type:"user_message", content, conversation_id: activeConversation }));
+  ws.send(JSON.stringify({ type: "user_message", content, conversation_id: activeConversation, attachments: atts.map((a) => ({ mime: a.mime, data: a.data })) }));
   $in("input").value = "";
+  clearAttachments();
 };
 
 /* ---------- settings / control panel ---------- */

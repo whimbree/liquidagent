@@ -242,6 +242,34 @@ pub async fn pipeline_approve(State(state): State<AppState>) -> ApiResult<Status
     Ok(StatusCode::NO_CONTENT)
 }
 
+// --- attachments ------------------------------------------------------------------
+
+/// Serve a chat image attachment by id. Authed (private data). The id is a hex
+/// string from a random 16-byte value, charset-checked so it can't traverse.
+pub async fn serve_attachment(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+) -> Response {
+    if id.is_empty() || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return (StatusCode::BAD_REQUEST, "bad id").into_response();
+    }
+    let mime = match state.db.attachment_mime(&id) {
+        Ok(Some(m)) => m,
+        _ => return (StatusCode::NOT_FOUND, "not found").into_response(),
+    };
+    match tokio::fs::read(state.attachments_dir.join(&id)).await {
+        Ok(bytes) => (
+            [
+                (axum::http::header::CONTENT_TYPE, mime),
+                (axum::http::header::CACHE_CONTROL, "private, max-age=31536000".to_string()),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
 // --- settings endpoints -----------------------------------------------------------
 
 pub async fn get_settings(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {

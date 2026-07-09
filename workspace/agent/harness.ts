@@ -15,9 +15,10 @@ import {
   tool,
   type Query,
   type SDKMessage,
+  type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { emit, logToStderr, readRequests, type AgentEvent } from "./ipc";
+import { emit, logToStderr, readRequests, type AgentEvent, type Attachment } from "./ipc";
 import { assertNever, conversationId, type ConversationId } from "./protocol";
 import { buildSystemPromptAppend } from "./prompt";
 
@@ -81,11 +82,30 @@ const shellServer = createSdkMcpServer({
   ],
 });
 
-async function startQuery(prompt: string, resumeSessionId?: string, model?: string): Promise<Query> {
+/** A one-shot streaming prompt carrying the text plus the pasted images as
+ *  Anthropic image content blocks (the SDK accepts `AsyncIterable<SDKUserMessage>`). */
+function imagePrompt(text: string, attachments: Attachment[]): AsyncIterable<SDKUserMessage> {
+  const content = [
+    ...(text ? [{ type: "text" as const, text }] : []),
+    ...attachments.map((a) => ({
+      type: "image" as const,
+      source: {
+        type: "base64" as const,
+        media_type: a.mime as "image/png" | "image/jpeg" | "image/gif" | "image/webp",
+        data: a.data,
+      },
+    })),
+  ];
+  return (async function* () {
+    yield { type: "user", parent_tool_use_id: null, message: { role: "user", content } } as SDKUserMessage;
+  })();
+}
+
+async function startQuery(prompt: string, resumeSessionId?: string, model?: string, attachments: Attachment[] = []): Promise<Query> {
   // Rebuilt every query so memory edits take effect immediately.
   const memoryAppend = await buildSystemPromptAppend(workspaceDir);
   return query({
-    prompt,
+    prompt: attachments.length > 0 ? imagePrompt(prompt, attachments) : prompt,
     options: {
       cwd: workspaceDir,
       pathToClaudeCodeExecutable: claudeBinary,
@@ -142,10 +162,10 @@ function toEvents(requestId: ConversationId, message: SDKMessage, sawFileTool: {
   }
 }
 
-async function runQuery(requestId: ConversationId, prompt: string, sessionId?: string, model?: string): Promise<void> {
+async function runQuery(requestId: ConversationId, prompt: string, sessionId?: string, model?: string, attachments: Attachment[] = []): Promise<void> {
   const sawFileTool = { value: false };
   currentQueryId = requestId;
-  const q = await startQuery(prompt, sessionId, model);
+  const q = await startQuery(prompt, sessionId, model, attachments);
   activeQuery = q;
   try {
     for await (const message of q) {
@@ -189,7 +209,7 @@ async function main(): Promise<void> {
     switch (request.type) {
       case "query":
         // Phase 0: one query at a time; requests queue in the supervisor channel.
-        await runQuery(request.id, request.prompt, request.session_id, request.model);
+        await runQuery(request.id, request.prompt, request.session_id, request.model, request.attachments ?? []);
         break;
       case "stop": {
         const q = activeQuery;

@@ -31,4 +31,7 @@ bun run e2e/shell-smoke.ts
 step "e2e: StrongLifts app + backend (offline-first + SQLite)"
 bun run e2e/stronglifts.ts
 
+step "e2e: chat image attachments (paste/store/serve/render)"
+bun run e2e/attachments.ts
+
 printf '\n✅ ALL CHECKS PASSED\n'

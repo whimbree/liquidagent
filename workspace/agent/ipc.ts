@@ -16,6 +16,10 @@ import {
  * protocol.ts and are parity-checked against the Rust side; ids are branded.
  */
 
+/** An image the human attached to a message: base64 bytes + its mime. */
+export const AttachmentSchema = z.object({ mime: z.string(), data: z.string() });
+export type Attachment = z.infer<typeof AttachmentSchema>;
+
 export const AgentRequestSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("query"),
@@ -23,6 +27,7 @@ export const AgentRequestSchema = z.discriminatedUnion("type", [
     prompt: z.string(),
     session_id: z.string().optional(),
     model: z.string().optional(),
+    attachments: z.array(AttachmentSchema).optional(),
   }),
   z.object({ type: z.literal("stop"), id: z.string() }),
 ]);
@@ -32,7 +37,7 @@ export const AgentRequestSchema = z.discriminatedUnion("type", [
  * refinement applied at the read boundary (see readRequests).
  */
 export type AgentRequest =
-  | { type: "query"; id: ConversationId; prompt: string; session_id?: string; model?: string }
+  | { type: "query"; id: ConversationId; prompt: string; session_id?: string; model?: string; attachments?: Attachment[] }
   | { type: "stop"; id: ConversationId };
 
 export type AgentEvent =
