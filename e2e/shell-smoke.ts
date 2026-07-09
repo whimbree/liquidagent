@@ -84,9 +84,33 @@ try {
   const fabHidden = await page.$eval("#chatfab", (e) => getComputedStyle(e).display === "none");
   const topBarChat = await page.$eval("#mobilechat", (e) => getComputedStyle(e).display !== "none");
   check("mobile: app opens fullscreen, FAB hidden, chat in the top bar", fabHidden && topBarChat);
+
+  // multitasking: background board, open a second app — both stay alive
+  await page.click("#mobileback"); // home (keep board alive)
+  await page.waitForSelector('.appicon[data-id="stronglifts"]', { timeout: 4000 });
+  await page.evaluate(() => (document.querySelector('.appicon[data-id="stronglifts"]') as HTMLElement).click());
+  await page.waitForFunction(() => document.querySelectorAll("#mobileframes iframe").length === 2, { timeout: 5000 });
+  check("mobile: opening a second app keeps both alive (2 live iframes)", true);
+
+  // recents overlay lists both and switches between them
+  await page.click("#mobilerecents");
+  await page.waitForFunction(() => document.getElementById("recents")!.classList.contains("open"), { timeout: 3000 });
+  check("mobile: recents lists both open apps", (await page.$$eval("#recents .rtile", (ts) => ts.length)) === 2);
+  await page.evaluate(() => { const t = [...document.querySelectorAll("#recents .rtile")].find((el) => /board/i.test(el.textContent || "")); (t as HTMLElement).click(); });
+  await page.waitForFunction(() => document.querySelector("#mobileframes iframe.active")?.getAttribute("data-app") === "board", { timeout: 3000 });
+  check("mobile: tapping a recents tile switches to that app (state kept)", true);
+
+  // close the other app from recents -> one live iframe left
+  await page.click("#mobilerecents");
+  await page.waitForFunction(() => document.getElementById("recents")!.classList.contains("open"), { timeout: 3000 });
+  await page.evaluate(() => { const t = [...document.querySelectorAll("#recents .rtile")].find((el) => /strong/i.test(el.textContent || "")); (t!.querySelector(".rclose") as HTMLElement).click(); });
+  await page.waitForFunction(() => document.querySelectorAll("#mobileframes iframe").length === 1, { timeout: 3000 });
+  check("mobile: closing from recents removes that app", true);
+  await page.evaluate(() => document.getElementById("recents")!.classList.remove("open"));
+
   await page.click("#mobileback");
   await page.waitForFunction(() => !document.getElementById("mobileapp")!.classList.contains("open"), { timeout: 3000 });
-  check("mobile: back returns home and restores the FAB", await page.$eval("#chatfab", (e) => getComputedStyle(e).display !== "none"));
+  check("mobile: home backgrounds apps and restores the FAB", await page.$eval("#chatfab", (e) => getComputedStyle(e).display !== "none"));
   await page.setViewport({ width: 1200, height: 800 }); // back to desktop for the WM tests
   await page.waitForSelector('.appicon[data-id="board"]', { timeout: 5000 }); // grid re-renders on resize
 

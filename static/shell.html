@@ -99,21 +99,46 @@
   #dock button:hover { background:#ffffff14; }
   @media (max-width:720px) { #dock { display:none !important; } }
 
-  /* mobile fullscreen app */
+  /* mobile: multiple apps kept alive; switch via recents / title-bar swipe */
   #mobileapp { display:none; position:absolute; inset:0; z-index:40; background:var(--bg);
                flex-direction:column; }
   #mobileapp.open { display:flex; }
-  #mobileapp header { display:flex; align-items:center; gap:0.4rem;
-                      padding:calc(0.45rem + env(safe-area-inset-top)) 0.7rem 0.45rem;
+  #mobileapp header { display:flex; align-items:center; gap:0.25rem; touch-action:pan-y;
+                      padding:calc(0.45rem + env(safe-area-inset-top)) 0.6rem 0.45rem;
                       border-bottom:1px solid var(--line); }
-  #mobileapp header b { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-                        font-size:0.9rem; }
-  #mobileapp header button { background:transparent; color:#c9c9d4; padding:0.25rem 0.5rem;
-                             font-size:1.15rem; border-radius:8px; position:relative; }
+  #mobileapp header .mtitle { flex:1; min-width:0; display:flex; align-items:center; gap:0.4rem; overflow:hidden; }
+  #mobiletitle { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:0.9rem; }
+  #mobiledots { display:flex; gap:0.25rem; flex:none; }
+  #mobiledots i { width:0.4rem; height:0.4rem; border-radius:50%; background:#ffffff33; }
+  #mobiledots i.on { background:var(--accent); }
+  #mobileapp header button { background:transparent; color:#c9c9d4; padding:0.25rem 0.45rem;
+                             font-size:1.15rem; border-radius:8px; position:relative; flex:none; }
   #mobileapp header button:active { background:#ffffff14; }
+  #mobilerecents { font-size:1.05rem; }
+  #mobilerecents .cnt { position:absolute; top:-0.05rem; right:-0.05rem; background:var(--accent);
+                    color:#fff; font-size:0.58rem; line-height:1; min-width:0.9rem; height:0.9rem;
+                    border-radius:0.45rem; display:flex; align-items:center; justify-content:center; padding:0 0.12rem; }
   #mobilechat.unread::after { content:""; position:absolute; top:0.1rem; right:0.15rem;
                     width:0.55rem; height:0.55rem; border-radius:50%; background:#e0645c; }
-  #mobileapp iframe { flex:1; border:0; width:100%; }
+  #mobileframes { flex:1; position:relative; }
+  #mobileframes iframe { position:absolute; inset:0; border:0; width:100%; height:100%; display:none; }
+  #mobileframes iframe.active { display:block; }
+
+  /* recents overlay (touch app switcher) */
+  #recents { position:fixed; inset:0; z-index:70; background:rgba(8,8,12,0.93); display:none;
+             flex-direction:column; padding:calc(1.1rem + env(safe-area-inset-top)) 1rem calc(1.1rem + env(safe-area-inset-bottom)); }
+  #recents.open { display:flex; }
+  #recents .recents-title { color:var(--dim); font-size:0.85rem; margin-bottom:0.8rem; }
+  #recents-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:0.8rem; overflow-y:auto; align-content:start; }
+  .rtile { background:#14141c; border:1px solid #2a2a36; border-radius:14px; padding:0.9rem;
+           display:flex; flex-direction:column; align-items:center; justify-content:center; gap:0.5rem;
+           position:relative; min-height:6.5rem; }
+  .rtile.active { border-color:var(--accent); }
+  .rtile .rglyph { font-size:2rem; }
+  .rtile .rname { font-size:0.8rem; color:#c9c9d4; text-align:center; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:100%; }
+  .rtile .rclose { position:absolute; top:0.35rem; right:0.35rem; width:1.6rem; height:1.6rem;
+                   border-radius:50%; background:#ffffff18; color:#fff; font-size:0.85rem;
+                   display:flex; align-items:center; justify-content:center; padding:0; }
 
   /* chat */
   #chatfab { position:fixed; right:1.1rem; bottom:calc(1.1rem + env(safe-area-inset-bottom));
@@ -395,11 +420,16 @@
   </div>
 
   <div id="mobileapp">
-    <header><button id="mobileback" title="Back to home">←</button><b id="mobiletitle"></b>
+    <header>
+      <button id="mobileback" title="Home">←</button>
+      <span class="mtitle"><b id="mobiletitle"></b><span id="mobiledots"></span></span>
+      <button id="mobilerecents" title="Open apps">⧉</button>
       <button id="mobilechat" title="Chat with liquid">💬</button>
-      <button id="mobilereload" title="Reload">↻</button></header>
-    <iframe id="mobileframe" title="app"></iframe>
+      <button id="mobilereload" title="Reload">↻</button>
+    </header>
+    <div id="mobileframes"></div>
   </div>
+  <div id="recents"><div class="recents-title">Open apps</div><div id="recents-grid"></div></div>
 
   <div id="dock"></div>
 

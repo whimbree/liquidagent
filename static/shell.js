@@ -1063,22 +1063,128 @@ async function openChatWindow(convId, pos, saved) {
   renderDock();
 }
 
-/* ---------- mobile app view ---------- */
+/* ---------- mobile app view: keep multiple apps alive, switch between them ----------
+   Phones can't do overlapping windows, so instead we keep an iframe per open app
+   in a stack (only the active one visible, the rest display:none but still loaded,
+   preserving their state). Switch via the recents overlay (⧉) or by swiping the
+   title bar. "Home" (←) backgrounds — apps stay open; closing is explicit. */
+/** @type {string[]} open app ids, in open order */
+let mobileApps = [];
+/** @type {string | null} */
+let activeMobileApp = null;
+
 /** @param {App} app */
 function openMobileApp(app) {
-  $("mobiletitle").textContent = `${app.icon} ${app.name}`;
-  $if("mobileframe").src = `/app/${encodeURIComponent(app.id)}/`;
-  $("mobileapp").classList.add("open");
   document.body.classList.add("app-open"); // hides the FAB; chat moves to the top bar
+  $("mobileapp").classList.add("open");
+  if (!mobileApps.includes(app.id)) {
+    mobileApps.push(app.id);
+    const fr = document.createElement("iframe");
+    fr.title = app.name;
+    fr.dataset.app = app.id;
+    fr.src = `/app/${encodeURIComponent(app.id)}/`;
+    $("mobileframes").append(fr);
+  }
+  setActiveMobileApp(app.id); // focus (reuses the live instance if already open)
 }
-function closeMobileApp() {
+/** @param {string} id */
+function setActiveMobileApp(id) {
+  activeMobileApp = id;
+  $("mobileframes").querySelectorAll("iframe").forEach((fr) => fr.classList.toggle("active", fr.dataset.app === id));
+  const app = apps.find((a) => a.id === id);
+  $("mobiletitle").textContent = app ? `${app.icon} ${app.name}` : "";
+  renderMobileChrome();
+}
+function renderMobileChrome() {
+  const dots = $("mobiledots");
+  dots.innerHTML = "";
+  if (mobileApps.length > 1) for (const id of mobileApps) {
+    const d = document.createElement("i");
+    if (id === activeMobileApp) d.className = "on";
+    dots.append(d);
+  }
+  const btn = $("mobilerecents");
+  let badge = btn.querySelector(".cnt");
+  if (mobileApps.length > 1) {
+    if (!badge) { badge = document.createElement("span"); badge.className = "cnt"; btn.append(badge); }
+    badge.textContent = String(mobileApps.length);
+  } else if (badge) { badge.remove(); }
+}
+// Home: background the current app (it + others stay alive); show the desk.
+function homeMobile() {
   $("mobileapp").classList.remove("open");
   document.body.classList.remove("app-open");
-  $if("mobileframe").src = "about:blank";
 }
-$("mobileback").onclick = closeMobileApp;
-$("mobilereload").onclick = () => { $if("mobileframe").src = $if("mobileframe").src; };
+/** @param {string} id — remove an app entirely (recents ✕) */
+function closeMobileApp(id) {
+  const fr = $("mobileframes").querySelector(`iframe[data-app="${id}"]`);
+  if (fr) fr.remove();
+  mobileApps = mobileApps.filter((a) => a !== id);
+  if (activeMobileApp === id) {
+    const next = mobileApps[mobileApps.length - 1];
+    if (next) setActiveMobileApp(next); else { activeMobileApp = null; homeMobile(); }
+  } else {
+    renderMobileChrome();
+  }
+  if ($("recents").classList.contains("open")) renderRecents();
+}
+/** cycle to prev/next open app (title-bar swipe) @param {number} dir */
+function cycleMobileApp(dir) {
+  if (mobileApps.length < 2 || activeMobileApp === null) return;
+  const i = mobileApps.indexOf(activeMobileApp);
+  const next = mobileApps[(i + dir + mobileApps.length) % mobileApps.length];
+  if (next) setActiveMobileApp(next);
+}
+
+/* recents overlay */
+function renderRecents() {
+  const grid = $("recents-grid");
+  grid.innerHTML = "";
+  if (!mobileApps.length) {
+    const empty = document.createElement("div");
+    empty.style.color = "var(--dim)";
+    empty.textContent = "No apps open.";
+    grid.append(empty);
+    return;
+  }
+  for (const id of [...mobileApps].reverse()) { // most-recent first
+    const app = apps.find((a) => a.id === id);
+    const tile = document.createElement("div");
+    tile.className = "rtile" + (id === activeMobileApp ? " active" : "");
+    const glyph = document.createElement("div"); glyph.className = "rglyph"; glyph.textContent = app ? app.icon : "📦";
+    const name = document.createElement("div"); name.className = "rname"; name.textContent = app ? app.name : id;
+    const close = document.createElement("button"); close.className = "rclose"; close.textContent = "✕";
+    close.onclick = (e) => { e.stopPropagation(); closeMobileApp(id); };
+    tile.append(glyph, name, close);
+    tile.onclick = () => { setActiveMobileApp(id); $("mobileapp").classList.add("open"); document.body.classList.add("app-open"); closeRecents(); };
+    grid.append(tile);
+  }
+}
+function openRecents() { renderRecents(); $("recents").classList.add("open"); }
+function closeRecents() { $("recents").classList.remove("open"); }
+
+$("mobileback").onclick = homeMobile;
+$("mobilerecents").onclick = openRecents;
+$("recents").addEventListener("click", (e) => { const t = /** @type {Element|null} */ (e.target); if (t && !t.closest(".rtile")) closeRecents(); });
+$("mobilereload").onclick = () => { const fr = $("mobileframes").querySelector("iframe.active"); if (fr instanceof HTMLIFrameElement) fr.src = fr.src; };
 $("mobilechat").onclick = () => summonChat(); // reach liquid without leaving the app
+
+// Quick-switch by swiping the title bar — shell chrome only, never the app
+// content (that would fight the app's own gestures and can't track across the
+// iframe boundary anyway).
+(() => {
+  let sx = 0, sy = 0, tracking = false;
+  const header = $("mobileapp").querySelector("header");
+  if (!header) return;
+  header.addEventListener("touchstart", (e) => { const t = e.touches[0]; if (!t) return; sx = t.clientX; sy = t.clientY; tracking = true; }, { passive: true });
+  header.addEventListener("touchend", (e) => {
+    if (!tracking) return;
+    tracking = false;
+    const t = e.changedTouches[0]; if (!t) return;
+    const dx = t.clientX - sx, dy = t.clientY - sy;
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) cycleMobileApp(dx < 0 ? 1 : -1);
+  }, { passive: true });
+})();
 
 /* ---------- chat ---------- */
 /** @type {Conversation[]} */
