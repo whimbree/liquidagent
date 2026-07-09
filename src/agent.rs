@@ -92,6 +92,13 @@ pub enum AgentEvent {
         title: String,
         body: String,
     },
+    /// An image the agent produced (e.g. its screenshot tool) to show the human
+    /// in the chat. `data` is base64. Stored as an attachment + fanned to shells.
+    Image {
+        id: String,
+        mime: String,
+        data: String,
+    },
 }
 
 /// Handle to the agent harness child process. Cloneable; all clones talk to
@@ -302,6 +309,7 @@ mod tests {
             serde_json::to_value(AgentEvent::Session { id: "i".into(), session_id: "s".into() }).unwrap(),
             serde_json::to_value(AgentEvent::Shell { id: "i".into(), action: "open_app".into(), app: "a".into() }).unwrap(),
             serde_json::to_value(AgentEvent::Notify { id: "i".into(), title: "t".into(), body: "b".into() }).unwrap(),
+            serde_json::to_value(AgentEvent::Image { id: "i".into(), mime: "image/png".into(), data: "x".into() }).unwrap(),
         ]
         .into_iter()
         .map(type_of)

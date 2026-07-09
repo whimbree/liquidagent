@@ -1,6 +1,6 @@
 {
   "_comment": "Canonical liquid IPC wire vocabulary. Single source of truth shared by the Rust supervisor (src/agent.rs) and the TS harness (protocol.ts). Both sides are checked against this file: workspace/agent/protocol.test.ts (TS) and the wire_parity test in src/agent.rs (Rust). Changing a value on one side without updating this file fails a test.",
-  "agentEventTypes": ["token", "tool", "done", "error", "session", "shell", "notify"],
+  "agentEventTypes": ["token", "tool", "done", "error", "session", "shell", "notify", "image"],
   "agentRequestTypes": ["query", "stop"],
   "toolStatuses": ["start", "done"],
   "shellActions": ["open_app"]

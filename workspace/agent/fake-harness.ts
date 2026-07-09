@@ -8,6 +8,8 @@
 import { emit, logToStderr, readRequests } from "./ipc";
 
 const TOKEN_DELAY_MS = 25;
+// A 1x1 PNG — lets offline tests exercise the agent→chat image path.
+const FAKE_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 function fakeResponse(prompt: string): string {
   return (
@@ -29,6 +31,10 @@ for await (const request of readRequests()) {
   emit({ type: "tool", id: request.id, name: "FakeTool", status: "start" });
   await Bun.sleep(TOKEN_DELAY_MS * 4);
   emit({ type: "tool", id: request.id, name: "FakeTool", status: "done" });
+  // Simulate the agent's screenshot tool showing the human an image.
+  if (/screenshot|show me/i.test(request.prompt)) {
+    emit({ type: "image", id: request.id, mime: "image/png", data: FAKE_PNG });
+  }
   for (const word of words) {
     emit({ type: "token", id: request.id, text: `${word} ` });
     await Bun.sleep(TOKEN_DELAY_MS);

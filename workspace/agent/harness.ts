@@ -83,9 +83,11 @@ const shellServer = createSdkMcpServer({
     tool(
       "screenshot",
       "See one of your apps as it actually renders in a real browser. Use this " +
-        "after building or changing an app to check its layout/visuals, or to " +
-        "debug a rendering bug you can't diagnose from the code alone. Returns a " +
-        "PNG image of the app. Defaults to a phone-sized viewport (390×780).",
+        "after building or changing an app to check its layout/visuals, to debug " +
+        "a rendering bug you can't diagnose from the code alone, or whenever your " +
+        "human asks to see a screenshot. Returns a PNG you can see — and it also " +
+        "appears in your human's chat, so calling this IS how you show them a " +
+        "screenshot. Defaults to a phone-sized viewport (390×780).",
       {
         app: z.string().describe("The app id — its directory name under apps/"),
         path: z.string().optional().describe("Route within the app, e.g. \"\" or \"index.html\""),
@@ -97,6 +99,8 @@ const shellServer = createSdkMcpServer({
         if (!shot.ok) {
           return { content: [{ type: "text", text: `Could not screenshot ${app}: ${shot.error}` }], isError: true };
         }
+        // Show the human the same image in their chat, not just the model.
+        emit({ type: "image", id: currentQueryId, mime: "image/png", data: shot.data });
         return { content: [{ type: "image", data: shot.data, mimeType: "image/png" }] };
       },
     ),

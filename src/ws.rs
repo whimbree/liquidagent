@@ -80,6 +80,13 @@ pub enum ServerEvent {
         conversation_id: i64,
         text: String,
     },
+    /// An image the agent produced (its screenshot tool), already stored as an
+    /// attachment — the shell renders it in the conversation's log.
+    Attachment {
+        conversation_id: i64,
+        id: String,
+        mime: String,
+    },
     Tool {
         conversation_id: i64,
         name: String,

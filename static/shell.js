@@ -20,7 +20,7 @@ const $if = (id) => /** @type {HTMLIFrameElement} */ ($(id));
  * @typedef {{el:HTMLElement,wid:number,id:number|null,currentBot:HTMLElement|null,log:HTMLElement,input:HTMLInputElement,send:HTMLButtonElement,stop:HTMLButtonElement,status:HTMLElement,title:HTMLElement,convlist:HTMLElement,geom:WinGeom}} ChatWin
  * @typedef {{el:HTMLElement,icon:string,label:string}} SwitcherItem
  * @typedef {{icon:string,label:string,run:()=>void}} PaletteItem
- * @typedef {{type:string,conversation_id?:number,text?:string,name?:string,message?:string,session_id?:string,action?:string,app?:string,title?:string,body?:string,apps?:App[],status?:{state?:string,reasoning?:string},busy?:boolean,mode?:string}} WsEvent
+ * @typedef {{type:string,conversation_id?:number,text?:string,name?:string,message?:string,session_id?:string,action?:string,app?:string,title?:string,body?:string,apps?:App[],status?:{state?:string,reasoning?:string},busy?:boolean,mode?:string,id?:string,mime?:string}} WsEvent
  */
 const RECONNECT_DELAY_MS = 1500;
 const LAYOUT_SAVE_DEBOUNCE_MS = 600;
@@ -969,6 +969,10 @@ function chatWinApply(w, ev) {
     case "error":
       bubbleIn(w.log, "errmsg", ev.message ?? ""); w.currentBot = null;
       w.status.textContent = ""; w.stop.hidden = true; break;
+    case "attachment":
+      w.currentBot = null;
+      if (ev.id) bubbleIn(w.log, "bot", "").append(attachmentThumbs([{ id: ev.id, mime: ev.mime ?? "image/png" }]));
+      break;
   }
 }
 
@@ -1509,6 +1513,11 @@ function connect() {
         $("chatfab").classList.add("busy");
         setStreaming(true);
         break;
+      case "attachment": {
+        currentBot = null; // the image is its own bubble
+        if (ev.id) bubble("bot", "").append(attachmentThumbs([{ id: ev.id, mime: ev.mime ?? "image/png" }]));
+        break;
+      }
       case "done":
         currentBot = null; $("status").textContent = "";
         $("chatfab").classList.remove("busy");
@@ -1586,10 +1595,36 @@ function attachmentThumbs(items) {
   for (const it of items) {
     const im = document.createElement("img");
     im.src = it.url || `/api/attachments/${it.id}?token=${encodeURIComponent(token ?? "")}`;
-    im.onclick = () => window.open(im.src, "_blank");
+    im.onclick = () => { if (isMobile()) window.open(im.src, "_blank"); else openImageWindow(im.src); };
     wrap.append(im);
   }
   return wrap;
+}
+/** A draggable, resizable window previewing an image full-size. @param {string} src @param {string} [name] */
+function openImageWindow(src, name) {
+  const win = document.createElement("div"); win.className = "imgwin";
+  win.style.left = Math.max(8, (innerWidth - 512) / 2) + "px";
+  win.style.top = Math.max(8, (innerHeight - 416) / 3) + "px";
+  const bar = document.createElement("div"); bar.className = "titlebar";
+  const title = document.createElement("b"); title.textContent = name || "Image";
+  const full = document.createElement("button"); full.textContent = "⤢"; full.title = "Open full size in a tab"; full.onclick = () => window.open(src, "_blank");
+  const close = document.createElement("button"); close.textContent = "✕"; close.title = "Close"; close.onclick = () => win.remove();
+  bar.append(title, full, close);
+  const wrap = document.createElement("div"); wrap.className = "imgwrap";
+  const img = document.createElement("img"); img.src = src; wrap.append(img);
+  win.append(bar, wrap); document.body.append(win);
+  bar.addEventListener("pointerdown", (e) => {
+    if (e.target !== bar && e.target !== title) return; // let the buttons work
+    e.preventDefault();
+    const sx = e.clientX - win.offsetLeft, sy = e.clientY - win.offsetTop;
+    const move = (/** @type {PointerEvent} */ ev) => {
+      win.style.left = Math.max(0, Math.min(ev.clientX - sx, innerWidth - 40)) + "px";
+      win.style.top = Math.max(0, Math.min(ev.clientY - sy, innerHeight - 20)) + "px";
+    };
+    const up = () => { removeEventListener("pointermove", move); removeEventListener("pointerup", up); };
+    addEventListener("pointermove", move); addEventListener("pointerup", up);
+  });
+  return win;
 }
 $("attachbtn").onclick = () => $in("attachinput").click();
 $("attachinput").addEventListener("change", () => { const f = $in("attachinput").files; if (f) addAttachments([...f]); $in("attachinput").value = ""; });

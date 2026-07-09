@@ -77,6 +77,17 @@ try {
   await page.waitForFunction(() => !!document.querySelector("#log .msg.user .athumbs img"), { timeout: 6000 }).catch(() => {});
   ok("the image still renders after a reload", await page.$eval("#log", (l) => !!l.querySelector(".msg.user .athumbs img")));
 
+  // the OTHER direction: the agent can push an image into your chat (screenshot
+  // tool → image event), and clicking it opens a resizable in-shell window.
+  await page.type("#input", "take a screenshot and show me");
+  await page.$eval("#composer", (f) => (f as HTMLFormElement).requestSubmit());
+  await page.waitForFunction(() => document.querySelectorAll("#log .msg.bot .athumbs img").length >= 1, { timeout: 10000 });
+  ok("the agent can push an image into your chat", true);
+  await page.click("#log .msg.bot .athumbs img");
+  await page.waitForSelector(".imgwin", { timeout: 4000 });
+  ok("clicking opens a resizable in-shell image window",
+    await page.$eval(".imgwin", (e) => getComputedStyle(e).resize === "both" && !!e.querySelector(".imgwrap img")));
+
   ok("no page errors", errs.length === 0); if (errs.length) console.log("  errors:", errs.slice(0, 4));
 } finally {
   await browser.close(); server.kill("SIGTERM"); await sleep(500); rmSync(root, { recursive: true, force: true });

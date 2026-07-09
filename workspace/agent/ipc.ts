@@ -47,7 +47,8 @@ export type AgentEvent =
   | { type: "error"; id: ConversationId; message: string }
   | { type: "session"; id: ConversationId; session_id: string }
   | { type: "shell"; id: ConversationId; action: ShellAction; app: string }
-  | { type: "notify"; id: ConversationId; title: string; body: string };
+  | { type: "notify"; id: ConversationId; title: string; body: string }
+  | { type: "image"; id: ConversationId; mime: string; data: string };
 
 // Compile-time check: every event's discriminant is a known wire type.
 type _EventsAreWireTypes = AgentEvent["type"] extends AgentEventType ? true : never;

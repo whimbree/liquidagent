@@ -383,6 +383,35 @@ async fn record_agent_events(state: AppState) {
                 broadcast_busy(&state, conversation_id, false);
                 ServerEvent::Done { conversation_id }
             }
+            AgentEvent::Image { mime, data, .. } => {
+                if !crate::agent::ATTACHMENT_MIMES.contains(&mime.as_str()) {
+                    warn!("agent image: unsupported mime {mime}");
+                    continue;
+                }
+                let Ok(bytes) = data_encoding::BASE64.decode(data.as_bytes()) else {
+                    warn!("agent image: bad base64");
+                    continue;
+                };
+                let id = data_encoding::HEXLOWER.encode(&rand::random::<[u8; 16]>());
+                let path = state.attachments_dir.join(&id);
+                if tokio::fs::write(&path, &bytes).await.is_err() {
+                    warn!("agent image: write failed");
+                    continue;
+                }
+                // Persist on a standalone assistant message so it survives reload.
+                match state
+                    .db
+                    .append_message(conversation_id, "assistant", "")
+                    .and_then(|mid| state.db.add_attachment(&id, conversation_id, mid, &mime))
+                {
+                    Ok(()) => ServerEvent::Attachment { conversation_id, id, mime },
+                    Err(err) => {
+                        warn!("agent image: store failed: {err:#}");
+                        let _ = tokio::fs::remove_file(&path).await;
+                        continue;
+                    }
+                }
+            }
         };
         // No connected clients is fine; the recorder already persisted.
         let _ = state.client_events.send(server_event);
@@ -566,7 +595,8 @@ fn conversation_id_of(event: &AgentEvent) -> Option<i64> {
         | AgentEvent::Error { id, .. }
         | AgentEvent::Session { id, .. }
         | AgentEvent::Shell { id, .. }
-        | AgentEvent::Notify { id, .. } => id,
+        | AgentEvent::Notify { id, .. }
+        | AgentEvent::Image { id, .. } => id,
     };
     match id.parse() {
         Ok(id) => Some(id),

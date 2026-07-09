@@ -10,7 +10,7 @@
  * Rule (ADR 0001): domain values are literal unions, never TS `enum`.
  */
 
-export const AGENT_EVENT_TYPES = ["token", "tool", "done", "error", "session", "shell", "notify"] as const;
+export const AGENT_EVENT_TYPES = ["token", "tool", "done", "error", "session", "shell", "notify", "image"] as const;
 export const AGENT_REQUEST_TYPES = ["query", "stop"] as const;
 export const TOOL_STATUSES = ["start", "done"] as const;
 export const SHELL_ACTIONS = ["open_app"] as const;
