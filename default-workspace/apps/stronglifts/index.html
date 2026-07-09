@@ -19,7 +19,7 @@
        border-radius:10px;padding:.6rem .7rem;width:100%}
   .app{flex:1;display:flex;flex-direction:column;min-height:0}
 
-  header{display:flex;align-items:center;gap:.6rem;padding:.9rem 1rem .6rem;}
+  header{display:flex;align-items:center;gap:.6rem;padding:.55rem 1rem .3rem;}
   header h1{font-size:1.05rem;margin:0;font-weight:600;flex:1}
   .abtag{font-size:.72rem;font-weight:700;letter-spacing:.08em;padding:.2rem .5rem;border-radius:999px;
          background:var(--accent);color:#fff}
@@ -28,35 +28,35 @@
   .sync{width:.55rem;height:.55rem;border-radius:50%;background:var(--dim);flex:none;transition:background .2s}
   .sync.synced{background:var(--good)} .sync.pending{background:var(--warn)} .sync.offline{background:var(--bad)}
 
-  main{flex:1;overflow-y:auto;padding:.4rem 1rem 1.4rem;-webkit-overflow-scrolling:touch}
+  main{flex:1;overflow-y:auto;padding:.2rem 1rem .8rem;-webkit-overflow-scrolling:touch}
   .hidden{display:none!important}
 
   /* exercise card */
-  .ex{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:.85rem;margin:.6rem 0}
+  .ex{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:.6rem .7rem;margin:.4rem 0}
   .ex .top{display:flex;align-items:center;gap:.6rem}
   .ex .name{font-weight:600;flex:1}
   .ex .wt{font-variant-numeric:tabular-nums;font-weight:700;font-size:1.15rem;
           background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:.3rem .6rem;display:flex;gap:.35rem;align-items:baseline}
   .ex .wt small{color:var(--dim);font-size:.7rem;font-weight:500}
-  .plates{color:var(--dim);font-size:.76rem;margin:.45rem 0 .2rem;min-height:1em}
+  .plates{color:var(--dim);font-size:.76rem;margin:.28rem 0 .12rem;min-height:1em}
   .plates b{color:#b9c4dd;font-weight:600}
-  .sets{display:flex;gap:.5rem;margin-top:.5rem;flex-wrap:wrap}
-  .set{width:2.9rem;height:2.9rem;border-radius:50%;border:2px solid var(--line);background:var(--panel2);
+  .sets{display:flex;gap:.4rem;margin-top:.38rem;flex-wrap:wrap}
+  .set{width:2.7rem;height:2.7rem;border-radius:50%;border:2px solid var(--line);background:var(--panel2);
        display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.05rem;color:var(--dim);
        font-variant-numeric:tabular-nums;transition:transform .06s}
   .set:active{transform:scale(.92)}
   .set.done{background:var(--good);border-color:var(--good);color:#fff}
   .set.miss{background:var(--warn);border-color:var(--warn);color:#191100}
-  .warm{margin-top:.55rem;font-size:.8rem;color:var(--dim)}
+  .warm{margin-top:.4rem;font-size:.8rem;color:var(--dim)}
   .warm summary{cursor:pointer;color:#9fb2d8}
   .warm table{border-collapse:collapse;margin-top:.35rem;font-variant-numeric:tabular-nums}
   .warm td{padding:.12rem .6rem .12rem 0}
 
-  .finish{width:100%;padding:.95rem;border-radius:var(--r);background:var(--accent);color:#fff;
-          font-weight:700;font-size:1rem;margin-top:.4rem}
+  .finish{width:100%;padding:.8rem;border-radius:var(--r);background:var(--accent);color:#fff;
+          font-weight:700;font-size:1rem;margin-top:.35rem}
   .finish:disabled{opacity:.4}
-  .ghostbtn{width:100%;padding:.8rem;border-radius:var(--r);background:var(--panel);border:1px solid var(--line);
-            color:var(--text);font-weight:600;margin-top:.5rem}
+  .ghostbtn{width:100%;padding:.6rem;border-radius:var(--r);background:var(--panel);border:1px solid var(--line);
+            color:var(--text);font-weight:600;margin-top:.4rem}
 
   /* rest timer */
   #rest{position:sticky;bottom:0;margin:.4rem -1rem -1.4rem;background:linear-gradient(0deg,#12121a,#1a1a22);
@@ -130,8 +130,9 @@
          padding:1rem 1.1rem calc(1.1rem + env(safe-area-inset-bottom));max-height:88dvh;overflow-y:auto}
   .sheet h2{margin:.2rem 0 .8rem;font-size:1.05rem}
   .sheet .actions{display:flex;gap:.6rem;margin-top:1rem}
-  .sheet .actions button{flex:1;padding:.85rem;border-radius:12px;font-weight:700}
-  .primary{background:var(--accent);color:#fff}
+  .sheet .actions button{flex:1;padding:.85rem;border-radius:12px;font-weight:700;background:var(--panel2);border:1px solid var(--line);color:var(--text)}
+  .primary{background:var(--accent)!important;color:#fff;border-color:var(--accent)!important}
+  .danger{background:var(--bad)!important;color:#fff;border-color:var(--bad)!important}
   .stepper{display:flex;align-items:center;gap:.6rem}
   .stepper button{width:3rem;height:3rem;border-radius:12px;background:var(--panel2);border:1px solid var(--line);font-size:1.4rem;font-weight:700}
   .stepper .num{flex:1;text-align:center;font-size:1.5rem;font-weight:800;font-variant-numeric:tabular-nums}
@@ -486,11 +487,18 @@ function renderWorkout() {
   });
 
   const fin = el("button", "finish", sessionComplete() ? "Finish workout ✓" : "Finish workout");
-  fin.onclick = () => { if (sessionComplete() || confirm("Some sets aren't logged. Finish anyway?")) finishWorkout(); };
+  fin.onclick = () => sessionComplete()
+    ? finishWorkout()
+    : confirmSheet("Finish anyway?", "Some sets aren't logged — you'll still progress the ones that are.", "Finish", finishWorkout);
   m.append(fin);
-  const cancel = el("button", "ghostbtn", "Cancel workout");
-  cancel.onclick = () => { if (confirm("Discard this workout without saving or progressing?")) { S.session = null; stopRest(); save(); render(); } };
-  m.append(cancel);
+  // Only offer to discard once something's actually logged — on a fresh workout
+  // there's nothing to cancel, and the button just looked broken.
+  if (S.session.lifts.some(l => l.reps.some(r => r !== null))) {
+    const cancel = el("button", "ghostbtn", "Discard workout");
+    cancel.onclick = () => confirmSheet("Discard workout?", "Your logged sets won't be saved and you won't progress.", "Discard",
+      () => { S.session = null; stopRest(); save(); render(); }, true);
+    m.append(cancel);
+  }
 }
 
 function renderHistory() {
@@ -665,15 +673,16 @@ function renderSettings() {
   // reset
   const g6 = el("div", "grp");
   const rw = el("button", "dangerbtn", "Reset weights to defaults");
-  rw.onclick = () => { if (confirm("Reset all working weights and progress to the defaults for " + U() + "?")) { const f = freshState(U(), true); S.weights = f.weights; S.fails = f.fails; S.session = null; saveCfg(); render(); } };
+  rw.onclick = () => confirmSheet("Reset weights?", `Working weights and progress go back to the ${U()} defaults. History is kept.`, "Reset",
+    () => { const f = freshState(U(), true); S.weights = f.weights; S.fails = f.fails; S.session = null; saveCfg(); render(); }, true);
   g6.append(rw);
   const ra = el("button", "dangerbtn", "Erase everything");
-  ra.onclick = async () => {
-    if (!confirm("Erase ALL data including history, on this device AND the server? This can't be undone.")) return;
-    try { if (online()) await api("DELETE", "/all"); } catch {}
-    localStorage.removeItem(KEY); localStorage.removeItem("sl5x5.state.v1");
-    S = freshState("kg", false); stats = null; tab = "workout"; render();
-  };
+  ra.onclick = () => confirmSheet("Erase everything?", "Deletes all history and settings, on this device AND the server. Can't be undone.", "Erase",
+    async () => {
+      try { if (online()) await api("DELETE", "/all"); } catch {}
+      localStorage.removeItem(KEY); localStorage.removeItem("sl5x5.state.v1");
+      S = freshState("kg", false); stats = null; tab = "workout"; render();
+    }, true);
   g6.append(ra);
   m.append(g6);
 }
@@ -762,6 +771,19 @@ function renderOnboarding() {
 /* ---------- modal + nav wiring ---------- */
 function openModal() { $("#modal").classList.add("open"); }
 function closeModal() { $("#modal").classList.remove("open"); $("#sheet").innerHTML = ""; }
+// A clear in-app confirm — unlike native confirm(), the buttons say exactly what
+// they do ("Keep going" vs the action), so there's no "Cancel cancels the cancel".
+function confirmSheet(title, body, confirmLabel, onConfirm, danger) {
+  const sh = $("#sheet"); sh.innerHTML = "";
+  sh.append(el("h2", null, title));
+  if (body) sh.append(el("div", "hint", body));
+  const acts = el("div", "actions");
+  const no = el("button", null, "Keep going"); no.onclick = closeModal;
+  const yes = el("button", danger ? "danger" : "primary", confirmLabel);
+  yes.onclick = () => { closeModal(); onConfirm(); };
+  acts.append(no, yes); sh.append(acts);
+  openModal();
+}
 $("#modal").addEventListener("click", e => { if (e.target === $("#modal")) closeModal(); });
 document.querySelectorAll("nav button").forEach(b => b.addEventListener("click", () => { tab = b.dataset.tab; if (tab === "stats") fetchStats(); render(); }));
 $("#restMinus").onclick = () => { if (rest) { rest.endsAt = Math.max(Date.now(), rest.endsAt - 15000); rest.fired = false; $("#rest").classList.remove("done"); tickRest(); } };

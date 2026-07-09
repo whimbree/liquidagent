@@ -82,6 +82,9 @@ try {
   await page.setOfflineMode(true);
   await sleep(100);
   await f.$$eval(".finish", (bs) => (bs.find((b) => /Finish/.test(b.textContent || "")) as HTMLElement).click());
+  // incomplete workout -> in-app confirm sheet; click its confirm button
+  await f.waitForFunction(() => document.querySelector("#modal.open") !== null, { timeout: 3000 });
+  await f.$eval("#sheet .actions .primary", (b) => (b as HTMLElement).click());
   await sleep(500);
   const queued = await f.evaluate(() => JSON.parse(localStorage.getItem("sl5x5.state.v2") || "{}").queue?.length || 0);
   ok("finishing offline queues the workout locally", queued >= 1);
