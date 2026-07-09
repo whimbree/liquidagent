@@ -13,7 +13,7 @@ const $if = (id) => /** @type {HTMLIFrameElement} */ ($(id));
  * @typedef {{id:number|null,x:number,y:number,w:number,h:number,maximized?:boolean,minimized?:boolean}} ChatWinGeom
  * @typedef {{name:string,apps:string[]}} Folder
  * @typedef {{accent?:string,wallpaper?:string}} Appearance
- * @typedef {{windows:Record<string,WinGeom>,chatWindows?:ChatWinGeom[],folders?:Record<string,Folder>,iconOrder?:string[],appearance?:Appearance,chat?:{x:number,y:number}}} Layout
+ * @typedef {{windows:Record<string,WinGeom>,chatWindows?:ChatWinGeom[],folders?:Record<string,Folder>,iconOrder?:string[],appearance?:Appearance,chat?:{x:number,y:number,w?:number,h?:number}}} Layout
  * @typedef {{id:string,name:string,icon:string,description:string,has_backend?:boolean,backend?:{state:string},window?:{width?:number,height?:number,minWidth?:number,minHeight?:number}}} App
  * @typedef {{id:number,title:string,model?:string|null}} Conversation
  * @typedef {{title:string,body:string,ts:number}} TrayNotification
@@ -1313,10 +1313,12 @@ function summonChat(x, y) {
       const px = Math.max(8, Math.min(x - w / 2, innerWidth - w - 8));
       const py = Math.max(8, Math.min(y - 20, innerHeight - h - 8));
       chat.style.left = px + "px"; chat.style.top = py + "px";
-      layout.chat = { x: px, y: py };
+      layout.chat = { ...layout.chat, x: px, y: py };
       scheduleLayoutSave();
     } else if (layout.chat) {
       chat.style.left = layout.chat.x + "px"; chat.style.top = layout.chat.y + "px";
+      if (layout.chat.w) chat.style.width = layout.chat.w + "px";
+      if (layout.chat.h) chat.style.height = layout.chat.h + "px";
     } else { // default: bottom-right, where the bubble was
       chat.style.left = Math.max(8, innerWidth - chat.offsetWidth - 16) + "px";
       chat.style.top = Math.max(8, innerHeight - chat.offsetHeight - 16) + "px";
@@ -1330,6 +1332,13 @@ function closeChat() {
   document.body.classList.remove("chat-open");
 }
 $("chatclose").onclick = closeChat;
+// Persist the desktop chat's size when you drag its resize corner (CSS resize:both).
+new ResizeObserver(() => {
+  const chat = $("chat");
+  if (isMobile() || !chat.classList.contains("open")) return;
+  layout.chat = { x: chat.offsetLeft, y: chat.offsetTop, w: chat.offsetWidth, h: chat.offsetHeight };
+  scheduleLayoutSave();
+}).observe($("chat"));
 $("chatfab").onclick = () => summonChat();
 $("home").addEventListener("dblclick", (e) => {
   if (/** @type {Element|null} */(e.target)?.closest(".appicon")) return; // empty desk only
@@ -1375,7 +1384,7 @@ addEventListener("keyup", (e) => { if (switcher && !e.ctrlKey) commitSwitcher();
   const up = () => {
     removeEventListener("pointermove", move);
     removeEventListener("pointerup", up);
-    layout.chat = { x: chat.offsetLeft, y: chat.offsetTop };
+    layout.chat = { ...layout.chat, x: chat.offsetLeft, y: chat.offsetTop };
     scheduleLayoutSave();
   };
   addEventListener("pointermove", move);

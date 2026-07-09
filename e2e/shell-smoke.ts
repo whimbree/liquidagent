@@ -148,6 +148,8 @@ try {
   check("the command palette opens and finds the app", true);
   await page.keyboard.press("Escape");
 
+  check("the desktop chat is resizable like a window", (await page.$eval("#chat", (e) => getComputedStyle(e).resize)) === "both");
+
   check("no page errors", errs.length === 0);
   if (errs.length) console.log("  errors:", errs.slice(0, 4));
 } finally {
