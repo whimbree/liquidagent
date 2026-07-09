@@ -206,10 +206,10 @@ in
         set -uo pipefail
         dir=${selfDir}
         mkdir -p "$dir"
-        nixflags="--extra-experimental-features nix-command flakes"
+        feats="nix-command flakes"  # quoted as one value; word-splitting it breaks nix
         old="$(readlink -f "$dir/liquid" 2>/dev/null || true)|$(readlink -f "$dir/agent" 2>/dev/null || true)"
-        if nix build $nixflags --refresh '${au.flake}#liquid' --out-link "$dir/.gc-liquid" \
-           && nix build $nixflags '${au.flake}#liquid-agent' --out-link "$dir/.gc-agent"; then
+        if nix build --extra-experimental-features "$feats" --refresh '${au.flake}#liquid' --out-link "$dir/.gc-liquid" \
+           && nix build --extra-experimental-features "$feats" '${au.flake}#liquid-agent' --out-link "$dir/.gc-agent"; then
           ln -sfn "$(readlink -f "$dir/.gc-liquid")" "$dir/liquid"
           ln -sfn "$(readlink -f "$dir/.gc-agent")" "$dir/agent"
           chown -h ${cfg.user}:${cfg.group} "$dir/liquid" "$dir/agent" 2>/dev/null || true
