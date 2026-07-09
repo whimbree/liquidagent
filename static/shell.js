@@ -15,7 +15,7 @@ const $if = (id) => /** @type {HTMLIFrameElement} */ ($(id));
  * @typedef {{accent?:string,wallpaper?:string}} Appearance
  * @typedef {{windows:Record<string,WinGeom>,chatWindows?:ChatWinGeom[],folders?:Record<string,Folder>,iconOrder?:string[],appearance?:Appearance,chat?:{x:number,y:number}}} Layout
  * @typedef {{id:string,name:string,icon:string,description:string,has_backend?:boolean,backend?:{state:string},window?:{width?:number,height?:number,minWidth?:number,minHeight?:number}}} App
- * @typedef {{id:number,title:string}} Conversation
+ * @typedef {{id:number,title:string,model?:string|null}} Conversation
  * @typedef {{title:string,body:string,ts:number}} TrayNotification
  * @typedef {{el:HTMLElement,wid:number,id:number|null,currentBot:HTMLElement|null,log:HTMLElement,input:HTMLInputElement,send:HTMLButtonElement,stop:HTMLButtonElement,status:HTMLElement,title:HTMLElement,convlist:HTMLElement,geom:WinGeom}} ChatWin
  * @typedef {{el:HTMLElement,icon:string,label:string}} SwitcherItem
@@ -114,6 +114,7 @@ async function enterShell(appList) {
     }
   }
   await loadConversations();
+  await loadModelChoices();
   if (!isMobile()) {
     for (const cw of layout.chatWindows) {
       if (cw.id == null || conversations.some(c => c.id === cw.id)) openChatWindow(cw.id, undefined, cw);
@@ -1205,6 +1206,34 @@ async function loadConversations() {
   conversations = (await (await api("/api/conversations")).json()).conversations;
   if (conversations[0]) await openConversation(conversations[0].id);
 }
+
+/* ---- per-chat model picker (each conversation can pin its own model) ---- */
+/** @type {{id:string,label:string}[]} */
+let modelChoices = [];
+/** @type {string | null} model chosen for a not-yet-created chat */
+let pendingModel = null;
+async function loadModelChoices() {
+  try { modelChoices = (await (await api("/api/settings")).json()).models || []; } catch { modelChoices = []; }
+  const sel = /** @type {HTMLSelectElement} */ ($("modelpick"));
+  sel.innerHTML = "";
+  for (const m of modelChoices) { const o = document.createElement("option"); o.value = m.id; o.textContent = m.label; sel.append(o); }
+  syncModelPick();
+}
+function syncModelPick() {
+  const sel = /** @type {HTMLSelectElement} */ ($("modelpick"));
+  const conv = conversations.find((c) => c.id === activeConversation);
+  sel.value = (conv && conv.model) || pendingModel || "default";
+}
+$("modelpick").addEventListener("change", async () => {
+  const model = /** @type {HTMLSelectElement} */ ($("modelpick")).value;
+  if (activeConversation !== null) {
+    const conv = conversations.find((c) => c.id === activeConversation);
+    if (conv) conv.model = model === "default" ? null : model;
+    try { await api(`/api/conversations/${activeConversation}/model`, { method: "PUT", body: JSON.stringify({ model }) }); } catch {}
+  } else {
+    pendingModel = model === "default" ? null : model; // applied when the chat is created
+  }
+});
 function renderConvList() {
   const box = $("convlist");
   box.innerHTML = "";
@@ -1253,6 +1282,7 @@ async function openConversation(id) {
     setBubble(currentBot, renderMarkdown(pending.raw));
   }
   setStreaming(!!pending);
+  syncModelPick();
 }
 function newConversation() {
   activeConversation = null; currentBot = null;
@@ -1260,6 +1290,7 @@ function newConversation() {
   $("convtitle").textContent = "New conversation";
   renderConvList();
   setStreaming(false);
+  syncModelPick();
   $("input").focus();
 }
 $("newchat").onclick = newConversation; // new conversation in the panel
@@ -1427,6 +1458,14 @@ function connect() {
       } else if (activeConversation === null) {
         activeConversation = ev.conversation_id;
         $("convtitle").textContent = ev.title ?? "";
+        // apply a model picked before this chat existed
+        if (pendingModel) {
+          const m = pendingModel; pendingModel = null;
+          const conv = conversations.find((c) => c.id === ev.conversation_id);
+          if (conv) conv.model = m;
+          api(`/api/conversations/${ev.conversation_id}/model`, { method: "PUT", body: JSON.stringify({ model: m }) }).catch(() => {});
+        }
+        syncModelPick();
       }
       renderConvList();
       return;

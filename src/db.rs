@@ -2,7 +2,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 
 const SCHEMA: &str = "
@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS conversations (
     id          INTEGER PRIMARY KEY,
     title       TEXT NOT NULL,
     session_id  TEXT,
+    model       TEXT,
     created_at  INTEGER NOT NULL,
     updated_at  INTEGER NOT NULL
 );
@@ -51,6 +52,9 @@ pub struct Conversation {
     pub id: i64,
     pub title: String,
     pub session_id: Option<String>,
+    /// Per-conversation model override (a pinned model id). None = inherit the
+    /// global default. See `crate::api::effective_model`.
+    pub model: Option<String>,
     pub updated_at: i64,
 }
 
@@ -96,6 +100,14 @@ impl Db {
     fn init(conn: Connection) -> anyhow::Result<Self> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA).context("applying schema")?;
+        // Idempotent migration: add conversations.model to DBs created before it
+        // existed. New DBs already have it from SCHEMA, so this errors with
+        // "duplicate column name" — which we ignore.
+        if let Err(err) = conn.execute("ALTER TABLE conversations ADD COLUMN model TEXT", []) {
+            if !err.to_string().contains("duplicate column") {
+                return Err(err).context("adding conversations.model column");
+            }
+        }
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -120,17 +132,39 @@ impl Db {
     pub fn list_conversations(&self) -> anyhow::Result<Vec<Conversation>> {
         let conn = self.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, title, session_id, updated_at FROM conversations ORDER BY updated_at DESC",
+            "SELECT id, title, session_id, model, updated_at FROM conversations ORDER BY updated_at DESC",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Conversation {
                 id: row.get(0)?,
                 title: row.get(1)?,
                 session_id: row.get(2)?,
-                updated_at: row.get(3)?,
+                model: row.get(3)?,
+                updated_at: row.get(4)?,
             })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The per-conversation model override, if one is set (None = inherit global).
+    pub fn conversation_model(&self, id: i64) -> anyhow::Result<Option<String>> {
+        let conn = self.lock();
+        let model = conn
+            .query_row("SELECT model FROM conversations WHERE id = ?1", [id], |row| {
+                row.get::<_, Option<String>>(0)
+            })
+            .optional()?
+            .flatten();
+        Ok(model)
+    }
+
+    /// Set (Some) or clear (None) a conversation's model override.
+    pub fn set_conversation_model(&self, id: i64, model: Option<&str>) -> anyhow::Result<()> {
+        self.lock().execute(
+            "UPDATE conversations SET model = ?2 WHERE id = ?1",
+            rusqlite::params![id, model],
+        )?;
+        Ok(())
     }
 
     pub fn conversation_title(&self, id: i64) -> anyhow::Result<Option<String>> {

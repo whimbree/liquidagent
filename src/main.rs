@@ -161,6 +161,10 @@ async fn main() -> anyhow::Result<()> {
             get(api::list_messages),
         )
         .route(
+            "/api/conversations/{id}/model",
+            axum::routing::put(api::set_conversation_model),
+        )
+        .route(
             "/api/auth/change_password",
             axum::routing::post(api::auth_change_password),
         )

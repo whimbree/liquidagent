@@ -10,19 +10,44 @@ use crate::auth;
 use crate::db::Db;
 use crate::AppState;
 
-/// The model aliases the Control Panel offers. "default" (and unset) means:
-/// pass nothing to the harness and let the Claude CLI / plan choose. Aliases
-/// are plan-aware and version-stable, which is why we store them rather than
-/// pinned model IDs.
+/// The global default-model setting key. "default" (and unset) means: pass
+/// nothing to the harness and let the Claude CLI / plan choose.
 pub const AGENT_MODEL_KEY: &str = "agent_model";
-pub const AGENT_MODELS: [&str; 4] = ["default", "opus", "sonnet", "haiku"];
 
-/// The model alias to attach to a harness query, or None to let the CLI default
-/// stand. Read live so a Control-Panel change takes effect on the next query.
+/// The curated model menu the UI renders (id, human label), in display order.
+/// A chat can pin any of these; "default" inherits the global default.
+pub const AGENT_MODEL_CHOICES: &[(&str, &str)] = &[
+    ("default", "Default"),
+    ("claude-opus-4-8", "Opus 4.8"),
+    ("claude-opus-4-7", "Opus 4.7"),
+    ("claude-opus-4-6", "Opus 4.6"),
+    ("claude-sonnet-5", "Sonnet 5"),
+    ("claude-sonnet-4-6", "Sonnet 4.6"),
+    ("claude-haiku-4-5", "Haiku 4.5"),
+    ("claude-fable-5", "Fable 5"),
+];
+
+/// Accepted by the setters: the curated ids above, plus the legacy coarse
+/// aliases the old global setting may still hold.
+pub fn is_known_model(m: &str) -> bool {
+    AGENT_MODEL_CHOICES.iter().any(|(id, _)| *id == m) || matches!(m, "opus" | "sonnet" | "haiku")
+}
+
+/// The global default model (or None to let the CLI decide).
 pub fn agent_model(db: &Db) -> Option<String> {
     match db.get_setting(AGENT_MODEL_KEY).ok().flatten() {
-        Some(m) if m != "default" && AGENT_MODELS.contains(&m.as_str()) => Some(m),
+        Some(m) if m != "default" && is_known_model(&m) => Some(m),
         _ => None,
+    }
+}
+
+/// The model to attach to a query for a conversation: its own pinned override if
+/// set, otherwise the global default. Read live so a change takes effect on the
+/// next query.
+pub fn effective_model(db: &Db, conversation_id: i64) -> Option<String> {
+    match db.conversation_model(conversation_id).ok().flatten() {
+        Some(m) if m != "default" && is_known_model(&m) => Some(m),
+        _ => agent_model(db),
     }
 }
 
@@ -224,7 +249,11 @@ pub async fn get_settings(State(state): State<AppState>) -> ApiResult<Json<serde
         .db
         .get_setting(AGENT_MODEL_KEY)?
         .unwrap_or_else(|| "default".to_string());
-    Ok(Json(json!({ "model": model, "models": AGENT_MODELS })))
+    let choices: Vec<_> = AGENT_MODEL_CHOICES
+        .iter()
+        .map(|(id, label)| json!({ "id": id, "label": label }))
+        .collect();
+    Ok(Json(json!({ "model": model, "models": choices })))
 }
 
 #[derive(Deserialize)]
@@ -237,13 +266,35 @@ pub async fn put_settings(
     Json(body): Json<SettingsBody>,
 ) -> ApiResult<Response> {
     if let Some(model) = body.model {
-        if !AGENT_MODELS.contains(&model.as_str()) {
+        if !is_known_model(&model) {
             return Ok(
                 (StatusCode::BAD_REQUEST, Json(json!({ "error": "unknown model" }))).into_response(),
             );
         }
         state.db.set_setting(AGENT_MODEL_KEY, &model)?;
     }
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ConversationModelBody {
+    model: String,
+}
+
+/// Pin (or clear, with "default") a single conversation's model.
+pub async fn set_conversation_model(
+    State(state): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    Json(body): Json<ConversationModelBody>,
+) -> ApiResult<Response> {
+    if !is_known_model(&body.model) {
+        return Ok(
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": "unknown model" }))).into_response(),
+        );
+    }
+    // "default" clears the override so the chat inherits the global default.
+    let stored = if body.model == "default" { None } else { Some(body.model.as_str()) };
+    state.db.set_conversation_model(id, stored)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -261,5 +312,32 @@ mod tests {
         assert_eq!(agent_model(&db), Some("opus".to_string()));
         db.set_setting(AGENT_MODEL_KEY, "gpt-4").unwrap();
         assert_eq!(agent_model(&db), None); // outside the allowlist
+    }
+
+    #[test]
+    fn per_conversation_model_overrides_the_global_default() {
+        let db = Db::open_in_memory().unwrap();
+        let c = db.create_conversation("chat").unwrap();
+
+        // no override, no global → None
+        assert_eq!(effective_model(&db, c), None);
+
+        // global default applies when the chat has no override
+        db.set_setting(AGENT_MODEL_KEY, "claude-sonnet-5").unwrap();
+        assert_eq!(effective_model(&db, c), Some("claude-sonnet-5".to_string()));
+
+        // the chat's own pin wins over the global
+        db.set_conversation_model(c, Some("claude-opus-4-6")).unwrap();
+        assert_eq!(effective_model(&db, c), Some("claude-opus-4-6".to_string()));
+
+        // an unknown pinned value is ignored (falls back to global)
+        db.set_conversation_model(c, Some("gpt-4")).unwrap();
+        assert_eq!(effective_model(&db, c), Some("claude-sonnet-5".to_string()));
+
+        // clearing the override ("default") returns to inheriting the global
+        db.set_conversation_model(c, None).unwrap();
+        assert_eq!(effective_model(&db, c), Some("claude-sonnet-5".to_string()));
+
+        assert!(is_known_model("claude-fable-5") && !is_known_model("gpt-4"));
     }
 }
