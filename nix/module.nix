@@ -98,6 +98,9 @@ in
       isSystemUser = true;
       group = cfg.group;
       home = cfg.dataDir;
+      # The agent runs shell commands (Claude Code's Bash tool) as this account;
+      # a nologin shell breaks that. Give it a real shell.
+      shell = pkgs.bashInteractive;
     };
     users.groups.${cfg.group} = { };
 
@@ -117,6 +120,11 @@ in
 
       environment = {
         HOME = cfg.dataDir;
+        # Pin Claude Code's config/credential dir so it never depends on HOME
+        # being set right — an interactive `sudo -u liquidagent` without -H would
+        # otherwise send it to the invoking user's home. `claude login` should be
+        # run with this same dir (or with -H) so creds land where the service reads.
+        CLAUDE_CONFIG_DIR = "${cfg.dataDir}/.claude";
         LIQUID_PORT = toString cfg.port;
         LIQUID_HOST = cfg.host;
         LIQUID_WORKSPACE_DIR = "${cfg.dataDir}/workspace";
