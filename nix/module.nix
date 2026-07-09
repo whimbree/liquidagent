@@ -11,6 +11,13 @@ self: { config, lib, pkgs, ... }:
 let
   cfg = config.services.liquidagent;
   packages = self.packages.${pkgs.stdenv.hostPlatform.system};
+  au = cfg.autoUpdate;
+  # When self-update is on the service runs from mutable symlinks the updater
+  # repoints (seeded from the pinned packages on first boot); otherwise straight
+  # from the pinned flake packages.
+  selfDir = "${cfg.dataDir}/self-update";
+  liquidExe = if au.enable then "${selfDir}/liquid/bin/liquid" else lib.getExe packages.liquid;
+  agentBase = if au.enable then "${selfDir}/agent" else "${packages.liquid-agent}";
 in
 {
   options.services.liquidagent = {
@@ -91,6 +98,24 @@ in
         Keep it out of the nix store — use agenix/sops-nix or a root-owned file.
       '';
     };
+
+    autoUpdate = {
+      enable = lib.mkEnableOption ''
+        periodic self-update: a timer builds the latest liquid from `flake` and
+        restarts the service when it changed. Needs a working nix inside the host
+        (a writable store — e.g. microvm.writableStoreOverlay — + the daemon)'';
+      flake = lib.mkOption {
+        type = lib.types.str;
+        default = "github:whimbree/liquidagent";
+        description = "Flake ref to track; its #liquid and #liquid-agent outputs are built.";
+      };
+      interval = lib.mkOption {
+        type = lib.types.str;
+        default = "5min";
+        example = "1h";
+        description = "systemd time between update checks (OnUnitActiveSec).";
+      };
+    };
   };
 
   config = lib.mkIf cfg.enable {
@@ -130,15 +155,21 @@ in
         LIQUID_WORKSPACE_DIR = "${cfg.dataDir}/workspace";
         LIQUID_DATA_DIR = "${cfg.dataDir}/data";
         LIQUID_AGENT_CMD =
-          "${pkgs.bun}/bin/bun run ${packages.liquid-agent}/share/liquid-agent/harness.ts";
+          "${pkgs.bun}/bin/bun run ${agentBase}/share/liquid-agent/harness.ts";
         LIQUID_REVIEW_CMD =
-          "${pkgs.bun}/bin/bun run ${packages.liquid-agent}/share/liquid-agent/review.ts";
+          "${pkgs.bun}/bin/bun run ${agentBase}/share/liquid-agent/review.ts";
         LIQUID_CLAUDE_BIN = "${cfg.claudePackage}/bin/claude";
         LIQUID_PIPELINE_MODE = cfg.pipelineMode;
       };
 
       serviceConfig = {
-        ExecStart = lib.getExe packages.liquid;
+        ExecStart = liquidExe;
+        # Self-update mode: seed the mutable symlinks from the pinned packages on
+        # first boot so the service always has a working version, even before the
+        # updater has run (or if it's offline). The updater repoints them later.
+        ExecStartPre = lib.mkIf au.enable [
+          "${pkgs.bash}/bin/bash -c '${pkgs.coreutils}/bin/mkdir -p ${selfDir}; [ -e ${selfDir}/liquid ] || ${pkgs.coreutils}/bin/ln -sfn ${packages.liquid} ${selfDir}/liquid; [ -e ${selfDir}/agent ] || ${pkgs.coreutils}/bin/ln -sfn ${packages.liquid-agent} ${selfDir}/agent'"
+        ];
         User = cfg.user;
         Group = cfg.group;
         WorkingDirectory = cfg.dataDir;
@@ -158,6 +189,48 @@ in
         RestrictSUIDSGID = true;
         LockPersonality = true;
         SystemCallFilter = [ "@system-service" ];
+      };
+    };
+
+    # Self-updater: build the latest liquid from the flake and restart the service
+    # only when the store paths actually change. Runs as root so it can use the
+    # nix daemon and restart the unit; --refresh bypasses the flake-registry cache
+    # so a fresh commit on the branch is picked up on the next tick.
+    systemd.services.liquidagent-update = lib.mkIf au.enable {
+      description = "Build the latest liquid from ${au.flake} and restart if changed";
+      path = [ pkgs.nix pkgs.coreutils pkgs.systemd ];
+      after = [ "network-online.target" ];
+      wants = [ "network-online.target" ];
+      serviceConfig.Type = "oneshot";
+      script = ''
+        set -uo pipefail
+        dir=${selfDir}
+        mkdir -p "$dir"
+        nixflags="--extra-experimental-features nix-command flakes"
+        old="$(readlink -f "$dir/liquid" 2>/dev/null || true)|$(readlink -f "$dir/agent" 2>/dev/null || true)"
+        if nix build $nixflags --refresh '${au.flake}#liquid' --out-link "$dir/.gc-liquid" \
+           && nix build $nixflags '${au.flake}#liquid-agent' --out-link "$dir/.gc-agent"; then
+          ln -sfn "$(readlink -f "$dir/.gc-liquid")" "$dir/liquid"
+          ln -sfn "$(readlink -f "$dir/.gc-agent")" "$dir/agent"
+          chown -h ${cfg.user}:${cfg.group} "$dir/liquid" "$dir/agent" 2>/dev/null || true
+          new="$(readlink -f "$dir/liquid")|$(readlink -f "$dir/agent")"
+          if [ "$old" != "$new" ]; then
+            echo "liquid changed → restarting liquidagent"
+            systemctl restart liquidagent.service
+          else
+            echo "liquid already current"
+          fi
+        else
+          echo "liquid build failed; keeping the running version" >&2
+        fi
+      '';
+    };
+    systemd.timers.liquidagent-update = lib.mkIf au.enable {
+      wantedBy = [ "timers.target" ];
+      timerConfig = {
+        OnBootSec = "3min";
+        OnUnitActiveSec = au.interval;
+        RandomizedDelaySec = "20s";
       };
     };
   };
