@@ -156,7 +156,10 @@ async fn main() -> anyhow::Result<()> {
     scheduler::start(state.clone());
 
     let protected = Router::new()
-        .route("/api/conversations", get(api::list_conversations))
+        .route(
+            "/api/conversations",
+            get(api::list_conversations).post(api::create_conversation),
+        )
         .route(
             "/api/conversations/{id}",
             axum::routing::delete(api::delete_conversation),

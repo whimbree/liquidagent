@@ -7,7 +7,7 @@ use tracing::{info, warn};
 use crate::agent::AgentRequest;
 use crate::AppState;
 
-const TITLE_MAX_CHARS: usize = 48;
+pub(crate) const TITLE_MAX_CHARS: usize = 48;
 
 /// Messages the browser sends over the WebSocket.
 #[derive(Debug, Deserialize)]

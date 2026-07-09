@@ -1043,15 +1043,31 @@ async function openChatWindow(convId, pos, saved) {
     const pi = pendingNewChats.indexOf(w); if (pi >= 0) pendingNewChats.splice(pi, 1);
     saveChatWins(); renderDock();
   };
-  /** @type {HTMLFormElement} */ (win.querySelector("form")).onsubmit = (e) => {
+  /** @type {HTMLFormElement} */ (win.querySelector("form")).onsubmit = async (e) => {
     e.preventDefault();
     const content = w.input.value.trim();
     if (!content || !ws || ws.readyState !== WebSocket.OPEN) return;
     bubbleIn(w.log, "user", content);
     w.currentBot = null;
-    if (w.id == null && !pendingNewChats.includes(w)) pendingNewChats.push(w);
-    ws.send(JSON.stringify({ type: "user_message", content, conversation_id: w.id }));
     w.input.value = "";
+    // Fresh chat: bind an id before sending (see createConversation). The FIFO
+    // below survives only as a fallback when the create call fails.
+    let target = w.id;
+    if (target == null) {
+      const id = await createConversation(content.slice(0, 48));
+      if (id !== null) {
+        target = id;
+        if (w.id == null) {
+          w.id = id;
+          w.title.textContent = conversations.find((c) => c.id === id)?.title ?? "";
+          saveChatWins(); renderDock(); renderConvList();
+        }
+      } else if (!pendingNewChats.includes(w)) {
+        pendingNewChats.push(w); // legacy: adopt via conversation_created
+      }
+    }
+    if (!ws || ws.readyState !== WebSocket.OPEN) return; // dropped during the create
+    ws.send(JSON.stringify({ type: "user_message", content, conversation_id: target }));
   };
   w.stop.onclick = () => {
     if (ws && ws.readyState === WebSocket.OPEN && w.id != null) {
@@ -1459,6 +1475,8 @@ function connect() {
     // Everything below is per-conversation and always carries a conversation id.
     if (ev.conversation_id == null) return;
     if (ev.type === "conversation_created") {
+      // Already known: it's the echo of our own REST create — nothing to adopt.
+      if (conversations.some((c) => c.id === ev.conversation_id)) { renderConvList(); return; }
       conversations.unshift({ id: ev.conversation_id, title: ev.title ?? "" });
       // If a chat window started this conversation, bind it (takes priority
       // over the primary panel adopting it).
@@ -1651,7 +1669,31 @@ addEventListener("drop", (e) => {
   if (files && files.length) { const imgs = [...files].filter((f) => f.type.startsWith("image/")); if (imgs.length) { e.preventDefault(); addAttachments(imgs); } }
 });
 
-$("composer").onsubmit = (e) => {
+/** Create a conversation up front so the id is bound BEFORE the first message is
+ *  sent. This closes the new-chat race: with server-side creation, switching
+ *  conversations during the round-trip left the reply streaming into a
+ *  conversation no surface owned (it looked lost). Returns null on failure —
+ *  callers fall back to the legacy null-id path.
+ *  @param {string} title @returns {Promise<number|null>} */
+async function createConversation(title) {
+  try {
+    const r = await api("/api/conversations", { method: "POST", body: JSON.stringify({ title }) });
+    if (!r.ok) return null;
+    const id = (await r.json()).id;
+    if (typeof id !== "number") return null;
+    if (!conversations.some((c) => c.id === id)) conversations.unshift({ id, title });
+    // A model picked before the chat existed applies now.
+    if (pendingModel) {
+      const m = pendingModel; pendingModel = null;
+      const conv = conversations.find((c) => c.id === id);
+      if (conv) conv.model = m;
+      api(`/api/conversations/${id}/model`, { method: "PUT", body: JSON.stringify({ model: m }) }).catch(() => {});
+    }
+    return id;
+  } catch { return null; }
+}
+
+$("composer").onsubmit = async (e) => {
   e.preventDefault();
   const content = $in("input").value.trim();
   const atts = pendingAttachments;
@@ -1661,9 +1703,26 @@ $("composer").onsubmit = (e) => {
   currentBot = null;
   // Queries serialize; if liquid is mid-task, say so instead of looking dead.
   if (busyOn) $("status").textContent = `queued — liquid is finishing ${busyOn}`;
-  ws.send(JSON.stringify({ type: "user_message", content, conversation_id: activeConversation, attachments: atts.map((a) => ({ mime: a.mime, data: a.data })) }));
   $in("input").value = "";
-  clearAttachments();
+  clearAttachments(); // instant — `atts` holds the captured array; this reassigns
+  // Fresh chat: bind an id first so switching away/back can't orphan the reply.
+  let target = activeConversation;
+  if (target === null) {
+    const id = await createConversation(content.slice(0, 48) || "Image");
+    if (id !== null) {
+      target = id;
+      // Only (re)bind the panel if it's still on "new conversation" — if the
+      // user switched away during the round-trip, don't yank them back; the
+      // reply lands in the (now listed) new conversation either way.
+      if (activeConversation === null) {
+        activeConversation = id;
+        $("convtitle").textContent = conversations.find((c) => c.id === id)?.title ?? "";
+      }
+      renderConvList();
+    }
+  }
+  if (!ws || ws.readyState !== WebSocket.OPEN) return; // dropped during the create
+  ws.send(JSON.stringify({ type: "user_message", content, conversation_id: target, attachments: atts.map((a) => ({ mime: a.mime, data: a.data })) }));
 };
 
 /* ---------- settings / control panel ---------- */

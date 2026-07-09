@@ -185,6 +185,29 @@ pub async fn list_conversations(State(state): State<AppState>) -> ApiResult<Json
     Ok(Json(json!({ "conversations": conversations })))
 }
 
+#[derive(Deserialize)]
+pub struct CreateConversationBody {
+    title: String,
+}
+
+/// Create a conversation up front so the shell can bind an id BEFORE sending the
+/// first message. This closes the new-chat race: with server-side creation (the
+/// legacy null-conversation_id path), switching chats during the create
+/// round-trip left the reply streaming into a conversation no surface owned.
+pub async fn create_conversation(
+    State(state): State<AppState>,
+    Json(body): Json<CreateConversationBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let title: String = body.title.trim().chars().take(crate::ws::TITLE_MAX_CHARS).collect();
+    let id = state.db.create_conversation(&title)?;
+    // Same broadcast the WS path makes, so other connected devices see it too.
+    let _ = state.client_events.send(crate::ws::ServerEvent::ConversationCreated {
+        conversation_id: id,
+        title,
+    });
+    Ok(Json(json!({ "id": id })))
+}
+
 pub async fn list_messages(
     State(state): State<AppState>,
     Path(id): Path<i64>,

@@ -150,6 +150,27 @@ try {
 
   check("the desktop chat is resizable like a window", (await page.$eval("#chat", (e) => getComputedStyle(e).resize)) === "both");
 
+  // new-chat race: send the first message of a fresh chat and switch away
+  // IMMEDIATELY. The id now binds at send time (REST create before ws.send), so
+  // the reply can't stream into a conversation no surface owns.
+  await page.click("#chatfab");
+  await page.waitForFunction(() => document.getElementById("chat")!.classList.contains("open"), { timeout: 5000 });
+  await page.click("#newchat");
+  await page.type("#input", "race check chat");
+  await page.$eval("#composer", (f) => (f as HTMLFormElement).requestSubmit());
+  await page.click("#convtoggle"); // switch away with zero delay
+  await page.evaluate(() => { const c = [...document.querySelectorAll("#convlist .conv")].find((e) => /make it/.test(e.textContent || "")); (c as HTMLElement).click(); });
+  await page.click("#convtoggle");
+  await page.waitForFunction(() => [...document.querySelectorAll("#convlist .conv")].some((e) => /race check chat/.test(e.textContent || "")), { timeout: 5000 });
+  check("new-chat race: the conversation exists exactly once after switching away",
+    (await page.$$eval("#convlist .conv", (els) => els.filter((e) => /race check chat/.test(e.textContent || "")).length)) === 1);
+  await page.evaluate(() => { const c = [...document.querySelectorAll("#convlist .conv")].find((e) => /race check chat/.test(e.textContent || "")); (c as HTMLElement).click(); });
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll("#log .msg.user")].some((u) => /race check chat/.test(u.textContent || "")) &&
+    [...document.querySelectorAll("#log .msg.bot")].some((b) => /You said/.test(b.textContent || "")), { timeout: 15000 });
+  check("new-chat race: switching back shows the message and the reply — nothing lost", true);
+  await page.click("#chatclose");
+
   check("no page errors", errs.length === 0);
   if (errs.length) console.log("  errors:", errs.slice(0, 4));
 } finally {
