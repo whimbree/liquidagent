@@ -26,18 +26,23 @@ const REPO = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
 const root = join(tmpdir(), `liquid-sl-e2e-${process.pid}`);
 const PASS = "sl-e2e-password";
 const CHROME = process.env.LIQUID_CHROME ?? Bun.which("chromium") ?? "/run/current-system/sw/bin/chromium";
+const SHOT_SECRET = "e2e-shot-secret-stronglifts";
 const A = `${BASE}/app/stronglifts/api`;
 
 let bad = 0;
 const ok = (n: string, p: boolean) => { console.log(`${p ? "  ✓" : "  ✗"} ${n}`); if (!p) bad++; };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const jget = async (p: string) => { const r = await fetch(A + p); return r.ok ? r.json() : null; };
+// StrongLifts is a PRIVATE app now, so its backend requires auth. In the browser
+// the owner session cookie rides along same-origin; these out-of-browser test
+// fetches present the (owner-equivalent) screenshot capability instead.
+const withShot = (u: string) => u + (u.includes("?") ? "&" : "?") + "__lshot=" + SHOT_SECRET;
+const jget = async (p: string) => { const r = await fetch(withShot(A + p)); return r.ok ? r.json() : null; };
 
 mkdirSync(root, { recursive: true });
 console.log("booting supervisor (fake harness) + chromium…");
 const server = spawn("cargo", ["run", "--quiet"], {
   cwd: REPO,
-  env: { ...process.env, LIQUID_FAKE_AGENT: "1", LIQUID_PORT: String(PORT), LIQUID_WORKSPACE_DIR: join(root, "workspace"), LIQUID_DATA_DIR: join(root, "data") },
+  env: { ...process.env, LIQUID_FAKE_AGENT: "1", LIQUID_PORT: String(PORT), LIQUID_INTERNAL_SECRET: SHOT_SECRET, LIQUID_WORKSPACE_DIR: join(root, "workspace"), LIQUID_DATA_DIR: join(root, "data") },
   stdio: ["ignore", "ignore", "inherit"],
 });
 const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1200,900"] });
@@ -45,7 +50,7 @@ try {
   for (let i = 0; i < 220; i++) { try { if ((await fetch(BASE + "/api/health")).ok) break; } catch {} await sleep(400); }
   // the app's own backend spawns lazily on first deploy — wait for its health
   let backendUp = false;
-  for (let i = 0; i < 120; i++) { try { if ((await fetch(A + "/health")).ok) { backendUp = true; break; } } catch {} await sleep(500); }
+  for (let i = 0; i < 120; i++) { try { if ((await fetch(withShot(A + "/health"))).ok) { backendUp = true; break; } } catch {} await sleep(500); }
   ok("the StrongLifts Bun+SQLite backend spawns and is healthy", backendUp);
 
   const page = await browser.newPage();
@@ -123,6 +128,7 @@ try {
 
   // the agent's screenshot tool captures this app as a real PNG (headless chromium)
   process.env.LIQUID_PORT = String(PORT);
+  process.env.LIQUID_INTERNAL_SECRET = SHOT_SECRET; // the tool presents this to view the private app
   process.env.LIQUID_CHROME = CHROME;
   const { captureAppScreenshot } = await import("../workspace/agent/screenshot.ts");
   const shot = await captureAppScreenshot("stronglifts", "", 390, 780);

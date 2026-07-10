@@ -69,12 +69,52 @@ pub struct AppManifest {
 }
 
 /// The access rule for an app surface. Pure so it's exhaustively testable:
-/// public is open; otherwise loopback (in-VM tooling) or an owner session.
-pub fn app_access_allowed(visibility: Visibility, is_loopback: bool, is_owner_session: bool) -> bool {
+/// public is open; private needs an authorized caller (owner session, or the
+/// supervisor's own screenshot capability). Loopback is deliberately NOT trusted
+/// — app backends run on loopback too, so a guest-reachable public backend must
+/// not become a read-proxy for private apps.
+pub fn app_access_allowed(visibility: Visibility, is_authorized: bool) -> bool {
     match visibility {
         Visibility::Public => true,
-        Visibility::Private => is_loopback || is_owner_session,
+        Visibility::Private => is_authorized,
     }
+}
+
+/// The query/cookie name carrying the per-boot screenshot capability. The agent's
+/// screenshot tool (in-VM chromium) presents `?__lshot=<secret>` on the initial
+/// navigation; `serve` echoes it as a Path-scoped HttpOnly cookie so the app's
+/// subresource requests carry it too. Only the harness holds the secret (passed
+/// at spawn) — app backends never receive it, so they can't forge it.
+pub const SHOT_QUERY: &str = "__lshot";
+pub const SHOT_COOKIE: &str = "liquid_shot";
+
+/// Whether the initial navigation presents the screenshot secret in its query.
+fn shot_in_query(secret: &str, raw_query: Option<&str>) -> bool {
+    !secret.is_empty()
+        && raw_query
+            .map(|q| q.split('&').any(|kv| kv == format!("{SHOT_QUERY}={secret}")))
+            .unwrap_or(false)
+}
+
+/// True if the request carries the valid screenshot capability (query or cookie).
+fn shot_capability(state: &AppState, headers: &axum::http::HeaderMap, raw_query: Option<&str>) -> bool {
+    let secret = state.internal_secret.as_str();
+    if secret.is_empty() {
+        return false;
+    }
+    if shot_in_query(secret, raw_query) {
+        return true;
+    }
+    headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|c| c.to_str().ok())
+        .map(|cookies| {
+            cookies
+                .split(';')
+                .filter_map(|c| c.trim().strip_prefix(&format!("{SHOT_COOKIE}=")))
+                .any(|v| v == secret)
+        })
+        .unwrap_or(false)
 }
 
 /// Visibility of an app by id, from the served-apps cache. Unknown apps are
@@ -91,19 +131,35 @@ pub fn app_visibility(state: &AppState, app: &str) -> Visibility {
 }
 
 /// Enforce the access rule for a request to `/app/<id>/*`. Returns an error
-/// response to send, or None when allowed.
+/// response to send, or None when allowed. `raw_query` is the request's query
+/// string (for the screenshot capability).
 pub fn check_app_access(
     state: &AppState,
     app: &str,
-    peer: std::net::SocketAddr,
     headers: &axum::http::HeaderMap,
+    raw_query: Option<&str>,
 ) -> Option<Response> {
     let vis = app_visibility(state, app);
     let is_owner = crate::auth::cookie_session_role(&state.db, headers).as_deref() == Some("owner");
-    if app_access_allowed(vis, peer.ip().is_loopback(), is_owner) {
+    let authorized = is_owner || shot_capability(state, headers, raw_query);
+    if app_access_allowed(vis, authorized) {
         None
     } else {
         Some((StatusCode::UNAUTHORIZED, "sign in to liquid to open this app").into_response())
+    }
+}
+
+/// If the request presents the screenshot secret in its query, the Set-Cookie
+/// value binding it path-scoped so the app's subresources carry it (chromium
+/// can't set headers/cookies itself; the initial navigation bootstraps it).
+pub fn shot_cookie_for(state: &AppState, app: &str, raw_query: Option<&str>) -> Option<String> {
+    let secret = state.internal_secret.as_str();
+    if shot_in_query(secret, raw_query) {
+        Some(format!(
+            "{SHOT_COOKIE}={secret}; Path=/app/{app}/; HttpOnly; SameSite=Lax; Max-Age=120"
+        ))
+    } else {
+        None
     }
 }
 
@@ -183,29 +239,30 @@ pub fn enriched_apps(state: &AppState) -> Vec<serde_json::Value> {
 /// plain name.
 pub async fn serve_app_file(
     State(state): State<AppState>,
-    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     UrlPath((app, path)): UrlPath<(String, String)>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    if let Some(denied) = check_app_access(&state, &app, peer, &headers) {
+    if let Some(denied) = check_app_access(&state, &app, &headers, query.as_deref()) {
         return denied;
     }
-    serve(state, app, path).await
+    serve(state, app, path, query).await
 }
 
 pub async fn serve_app_index(
     State(state): State<AppState>,
-    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     UrlPath(app): UrlPath<String>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    if let Some(denied) = check_app_access(&state, &app, peer, &headers) {
+    if let Some(denied) = check_app_access(&state, &app, &headers, query.as_deref()) {
         return denied;
     }
-    serve(state, app, "index.html".to_string()).await
+    serve(state, app, "index.html".to_string(), query).await
 }
 
-async fn serve(state: AppState, app: String, path: String) -> Response {
+async fn serve(state: AppState, app: String, path: String, query: Option<String>) -> Response {
+    let shot_cookie = shot_cookie_for(&state, &app, query.as_deref());
     if !is_safe_app_id(&app) {
         return StatusCode::NOT_FOUND.into_response();
     }
@@ -223,14 +280,19 @@ async fn serve(state: AppState, app: String, path: String) -> Response {
         Ok(bytes) => {
             let mime = mime_for(&safe_relative);
             // Agent edits should show up on refresh — never cache app files.
-            (
+            let mut resp = (
                 [
                     (header::CONTENT_TYPE, mime),
                     (header::CACHE_CONTROL, "no-cache"),
                 ],
                 bytes,
             )
-                .into_response()
+                .into_response();
+            // Bootstrap the screenshot cookie so chromium's asset requests carry it.
+            if let Some(cookie) = shot_cookie.and_then(|c| header::HeaderValue::from_str(&c).ok()) {
+                resp.headers_mut().append(header::SET_COOKIE, cookie);
+            }
+            resp
         }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
@@ -592,13 +654,24 @@ mod tests {
     #[test]
     fn app_access_rule_is_exhaustive() {
         use Visibility::{Private, Public};
-        // public: open to everyone, no session needed
-        assert!(app_access_allowed(Public, false, false));
-        // private: loopback (in-VM tooling: screenshot chromium, backends, tests) OK
-        assert!(app_access_allowed(Private, true, false));
-        // private: a logged-in owner (session cookie) OK
-        assert!(app_access_allowed(Private, false, true));
-        // private: a remote guest with no session is DENIED — the point of the rule
-        assert!(!app_access_allowed(Private, false, false));
+        // public: open to everyone, authorized or not
+        assert!(app_access_allowed(Public, false));
+        assert!(app_access_allowed(Public, true));
+        // private: only an authorized caller (owner session or screenshot cap)
+        assert!(app_access_allowed(Private, true));
+        // private: unauthorized is DENIED — loopback is NOT a free pass, so a
+        // guest-reachable app backend can't proxy-read private apps
+        assert!(!app_access_allowed(Private, false));
+    }
+
+    #[test]
+    fn shot_query_matches_only_the_exact_secret() {
+        assert!(shot_in_query("s3cr3t", Some("__lshot=s3cr3t")));
+        assert!(shot_in_query("s3cr3t", Some("a=1&__lshot=s3cr3t&b=2")));
+        assert!(!shot_in_query("s3cr3t", Some("__lshot=wrong")));
+        assert!(!shot_in_query("s3cr3t", Some("__lshotx=s3cr3t")));
+        assert!(!shot_in_query("s3cr3t", None));
+        // an empty secret is never a capability (belt-and-suspenders)
+        assert!(!shot_in_query("", Some("__lshot=")));
     }
 }

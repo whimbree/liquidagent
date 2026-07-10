@@ -18,7 +18,12 @@ export async function captureAppScreenshot(
     Bun.env.LIQUID_CHROME ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome-stable");
   if (!chrome) return { ok: false, error: "no chromium available (set LIQUID_CHROME on the host)" };
   const port = Bun.env.LIQUID_PORT ?? "3000";
-  const url = `http://127.0.0.1:${port}/app/${encodeURIComponent(app)}/${path.replace(/^\/+/, "")}`;
+  let url = `http://127.0.0.1:${port}/app/${encodeURIComponent(app)}/${path.replace(/^\/+/, "")}`;
+  // Present the screenshot capability so PRIVATE apps render. The initial
+  // navigation carries it in the query; the supervisor echoes it as a
+  // path-scoped cookie so chromium's subresource requests are authorized too.
+  const secret = Bun.env.LIQUID_INTERNAL_SECRET;
+  if (secret) url += `${url.includes("?") ? "&" : "?"}__lshot=${encodeURIComponent(secret)}`;
   const out = `${tmpdir()}/liquid-shot-${crypto.randomUUID()}.png`;
   try {
     const proc = Bun.spawn(

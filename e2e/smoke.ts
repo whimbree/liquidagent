@@ -21,6 +21,7 @@ const WS = join(root, "workspace");
 const DATA = join(root, "data");
 const REMOTE = join(root, "remote.git");
 const PASSWORD = "smoke-test-password";
+const SHOT = "smoke-internal-secret";
 
 let failures = 0;
 function check(name: string, pass: boolean, detail = "") {
@@ -40,10 +41,12 @@ async function until(what: string, fn: () => Promise<boolean>, ms = 25000) {
   while (Date.now() - start < ms) { if (await fn().catch(() => false)) return; await sleep(400); }
   throw new Error("timeout: " + what);
 }
-function commitApp(id: string, marker = "") {
+function commitApp(id: string, marker = "", visibility?: "public" | "private") {
   const dir = join(WS, "apps", id);
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "app.json"), JSON.stringify({ name: id, icon: "🧪", description: "e2e" }));
+  const manifest: Record<string, unknown> = { name: id, icon: "🧪", description: "e2e" };
+  if (visibility) manifest.visibility = visibility;
+  writeFileSync(join(dir, "app.json"), JSON.stringify(manifest));
   writeFileSync(join(dir, "index.html"), `<!doctype html><h1>${id} ${marker}</h1>`);
   git("add -A");
   git(`commit -q -m "add ${id}"`);
@@ -73,6 +76,7 @@ const server = spawn("cargo", ["run", "--quiet"], {
     LIQUID_DATA_DIR: DATA,
     LIQUID_PIPELINE_MODE: "reviewed",
     LIQUID_HOST: "0.0.0.0", // so the remote-denial checks can hit a non-loopback address
+    LIQUID_INTERNAL_SECRET: SHOT,
   },
   stdio: ["ignore", "ignore", "inherit"],
 });
@@ -122,20 +126,23 @@ try {
   }
 
   // --- pipeline: reviewed reject -> override ---
+  // These test apps are private (no visibility set), so an owner fetch presents
+  // the session cookie — the way the shell's iframe requests do.
+  const app = (p: string) => fetch(BASE + p, { headers: { Cookie: `liquid_session=${token}` } });
   console.log("pipeline");
   commitApp("bad", "REJECT_ME");
   await nudge(token);
   await until("rejected", async () => (await j("/api/pipeline", {}, token)).body?.status?.state === "rejected");
-  check("rejected app is not served", (await fetch(BASE + "/app/bad/")).status === 404);
+  check("rejected app is not served", (await app("/app/bad/")).status === 404);
   check("rejection carries reasoning", ((await j("/api/pipeline", {}, token)).body?.status?.reasoning ?? "").length > 0);
   await j("/api/pipeline/approve", { method: "POST" }, token);
-  await until("override served", async () => (await fetch(BASE + "/app/bad/")).status === 200);
+  await until("override served", async () => (await app("/app/bad/")).status === 200);
   check("human override deploys", true);
 
   // --- pipeline: reviewed approve ---
   commitApp("good");
   await nudge(token);
-  await until("good served", async () => (await fetch(BASE + "/app/good/")).status === 200);
+  await until("good served", async () => (await app("/app/good/")).status === 200);
   check("reviewed+approved deploys", (await j("/api/pipeline", {}, token)).body?.status?.state === "clean");
 
   // --- app visibility: private by default, cookie authenticates ---
@@ -147,8 +154,22 @@ try {
   check("login sets the HttpOnly session cookie", (rawLogin.headers.get("set-cookie") || "").includes("liquid_session="));
   const cookieMint = await fetch(BASE + "/api/auth/cookie", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
   check("an existing session can mint the cookie", cookieMint.status === 204 && (cookieMint.headers.get("set-cookie") || "").includes("liquid_session="));
-  // Loopback always passes (in-VM tooling: screenshot chromium, backends, tests);
-  // the deny path needs a NON-loopback address, so hit our own LAN IP.
+
+  // Loopback is NOT a free pass (the fix): `good` is private, BASE is 127.0.0.1,
+  // and a bare fetch has no cookie → denied. This is what stops a guest-reachable
+  // app backend (also loopback) from proxy-reading private apps.
+  check("loopback alone does not open a private app", (await fetch(`${BASE}/app/good/`)).status === 401);
+  // The screenshot capability (what the in-VM tool presents) does open it, and
+  // sets the path-scoped cookie so subresources are authorized too.
+  const shot = await fetch(`${BASE}/app/good/?__lshot=${SHOT}`);
+  check("the screenshot capability opens a private app", shot.status === 200);
+  check("…and bootstraps a path-scoped shot cookie", (shot.headers.get("set-cookie") || "").includes("liquid_shot="));
+  check("a wrong capability does not open it", (await fetch(`${BASE}/app/good/?__lshot=nope`)).status === 401);
+
+  // A PUBLIC app is reachable by anyone, no auth — even remote.
+  commitApp("shared", "", "public");
+  await nudge(token);
+  await until("public app served", async () => (await app("/app/shared/")).status === 200);
   const lan = Object.values(networkInterfaces()).flat().find((i) => i && !i.internal && i.family === "IPv4")?.address;
   if (lan) {
     const R = `http://${lan}:${PORT}`;
@@ -156,6 +177,7 @@ try {
     check("…and its backend proxy is denied too", (await fetch(`${R}/app/good/api/x`)).status === 401);
     check("…but the session cookie opens it", (await fetch(`${R}/app/good/`, { headers: { Cookie: `liquid_session=${token}` } })).status === 200);
     check("…and a bogus cookie does not", (await fetch(`${R}/app/good/`, { headers: { Cookie: "liquid_session=deadbeef" } })).status === 401);
+    check("a PUBLIC app is reachable remotely with no auth", (await fetch(`${R}/app/shared/`)).status === 200);
   } else {
     console.log("  (skip) no non-loopback interface for remote-denial checks");
   }

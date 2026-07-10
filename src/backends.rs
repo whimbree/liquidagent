@@ -148,12 +148,13 @@ impl BackendManager {
 
 pub async fn proxy_api(
     State(state): State<AppState>,
-    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     UrlPath((app, path)): UrlPath<(String, String)>,
     request: axum::extract::Request,
 ) -> Response {
-    // Backends share their app's visibility rule (private = owner cookie or loopback).
-    if let Some(denied) = crate::apps::check_app_access(&state, &app, peer, request.headers()) {
+    // Backends share their app's visibility rule (private = owner session cookie
+    // or the screenshot capability; never blanket loopback trust).
+    let query = request.uri().query().map(str::to_string);
+    if let Some(denied) = crate::apps::check_app_access(&state, &app, request.headers(), query.as_deref()) {
         return denied;
     }
     proxy(state, app, path, request).await
@@ -161,11 +162,11 @@ pub async fn proxy_api(
 
 pub async fn proxy_api_root(
     State(state): State<AppState>,
-    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     UrlPath(app): UrlPath<String>,
     request: axum::extract::Request,
 ) -> Response {
-    if let Some(denied) = crate::apps::check_app_access(&state, &app, peer, request.headers()) {
+    let query = request.uri().query().map(str::to_string);
+    if let Some(denied) = crate::apps::check_app_access(&state, &app, request.headers(), query.as_deref()) {
         return denied;
     }
     proxy(state, app, String::new(), request).await

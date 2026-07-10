@@ -110,12 +110,13 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn start(config: &Config) -> Self {
+    pub fn start(config: &Config, internal_secret: &str) -> Self {
         let (request_tx, request_rx) = mpsc::channel(REQUEST_CHANNEL_CAPACITY);
         let (event_tx, _) = broadcast::channel(EVENT_CHANNEL_CAPACITY);
 
         tokio::spawn(manage_agent_process(
             config.clone(),
+            internal_secret.to_string(),
             request_rx,
             event_tx.clone(),
         ));
@@ -143,6 +144,7 @@ impl Agent {
 /// sent while the child is down wait in the channel until it's back.
 async fn manage_agent_process(
     config: Config,
+    internal_secret: String,
     mut requests: mpsc::Receiver<AgentRequest>,
     events: broadcast::Sender<AgentEvent>,
 ) {
@@ -159,6 +161,9 @@ async fn manage_agent_process(
             .env("LIQUID_WORKSPACE_DIR", &config.workspace_dir)
             // So the harness's screenshot tool can reach apps at /app/<id>/.
             .env("LIQUID_PORT", config.port.to_string())
+            // The screenshot capability — lets the tool view PRIVATE apps. Only
+            // the harness gets it; app backends (spawned elsewhere) never do.
+            .env("LIQUID_INTERNAL_SECRET", &internal_secret)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())

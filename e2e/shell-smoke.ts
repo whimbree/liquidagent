@@ -64,7 +64,12 @@ try {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "app.json"), JSON.stringify({ name: "Board", icon: "📋", description: "smoke", window: { width: 360, height: 300, minWidth: 300 } }));
   writeFileSync(join(dir, "index.html"), "<!doctype html><h1>board</h1>");
-  git("add -A"); git('commit -q -m "add board"');
+  // a PUBLIC (guest-facing) app rides along, so we can assert its iframe is isolated
+  const gdir = join(WS, "apps", "guest");
+  mkdirSync(gdir, { recursive: true });
+  writeFileSync(join(gdir, "app.json"), JSON.stringify({ name: "Guest", icon: "🌐", description: "public", visibility: "public" }));
+  writeFileSync(join(gdir, "index.html"), "<!doctype html><h1>guest</h1>");
+  git("add -A"); git('commit -q -m "add board + guest"');
   await page.click("#chatfab");
   await page.waitForFunction(() => !(document.getElementById("send") as HTMLButtonElement).disabled, { timeout: 12000 });
   await page.type("#input", "make it"); await page.click("#send");
@@ -119,6 +124,20 @@ try {
   await page.waitForSelector(".window:not(.chatwin)", { timeout: 5000 });
   const openWidth = await page.$eval(".window:not(.chatwin)", (el) => (el as HTMLElement).offsetWidth);
   check("window opens at the app's declared width (not the default)", openWidth > 340 && openWidth < 400);
+
+  // a PRIVATE app (agent-authored) stays same-origin so it can use platform KV;
+  // a PUBLIC (guest-facing) app is sandboxed to an opaque origin so its JS can't
+  // read the shell's origin/localStorage/session token.
+  const iframeSandbox = (frag: string) =>
+    page.$eval(`.window:not(.chatwin) iframe[src*="/app/${frag}/"]`, (el) => el.getAttribute("sandbox"));
+  check("a private app's iframe is NOT sandboxed (same-origin)", (await iframeSandbox("board")) === null);
+  await page.evaluate(() => (document.querySelector('.appicon[data-id="guest"]') as HTMLElement).click());
+  await page.waitForFunction(() => !!document.querySelector('.window:not(.chatwin) iframe[src*="/app/guest/"]'), { timeout: 5000 });
+  const guestSandbox = (await iframeSandbox("guest")) ?? "";
+  check("a PUBLIC app's iframe IS sandboxed without allow-same-origin",
+    guestSandbox.includes("allow-scripts") && !guestSandbox.includes("allow-same-origin"));
+  await page.evaluate(() => document.querySelectorAll('.window:not(.chatwin) iframe[src*="/app/guest/"]').forEach((f) => f.closest(".window")?.querySelector<HTMLElement>(".titlebar .close")?.click()));
+  await sleep(150);
   await page.click(".window:not(.chatwin) .titlebar .min");
   await page.waitForFunction(() => document.querySelector(".window:not(.chatwin)")!.classList.contains("minimized"), { timeout: 3000 });
   check("app opens as a window and minimizes to the dock", (await page.$$("#dock button")).length === 1);

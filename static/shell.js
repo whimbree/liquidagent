@@ -14,7 +14,7 @@ const $if = (id) => /** @type {HTMLIFrameElement} */ ($(id));
  * @typedef {{name:string,apps:string[]}} Folder
  * @typedef {{accent?:string,wallpaper?:string}} Appearance
  * @typedef {{windows:Record<string,WinGeom>,chatWindows?:ChatWinGeom[],folders?:Record<string,Folder>,iconOrder?:string[],appearance?:Appearance,chat?:{x:number,y:number,w?:number,h?:number}}} Layout
- * @typedef {{id:string,name:string,icon:string,description:string,has_backend?:boolean,backend?:{state:string},window?:{width?:number,height?:number,minWidth?:number,minHeight?:number}}} App
+ * @typedef {{id:string,name:string,icon:string,description:string,visibility?:"public"|"private",has_backend?:boolean,backend?:{state:string},window?:{width?:number,height?:number,minWidth?:number,minHeight?:number}}} App
  * @typedef {{id:number,title:string,model?:string|null}} Conversation
  * @typedef {{title:string,body:string,ts:number}} TrayNotification
  * @typedef {{el:HTMLElement,wid:number,id:number|null,currentBot:HTMLElement|null,log:HTMLElement,input:HTMLInputElement,send:HTMLButtonElement,stop:HTMLButtonElement,status:HTMLElement,title:HTMLElement,convlist:HTMLElement,geom:WinGeom}} ChatWin
@@ -512,6 +512,15 @@ function scheduleLayoutSave() {
   }, LAYOUT_SAVE_DEBOUNCE_MS);
 }
 
+// PUBLIC apps face untrusted guests, so their iframe runs in an OPAQUE origin
+// (sandbox WITHOUT allow-same-origin) — its JS can't read the shell's origin,
+// localStorage, or session, so a guest-injected script can't steal the owner's
+// session when the owner opens the app. Private apps (agent-authored, trusted,
+// and using platform KV / the crash watcher) stay same-origin.
+const PUBLIC_APP_SANDBOX = "allow-scripts allow-forms allow-popups allow-modals allow-pointer-lock allow-downloads";
+/** @param {App} app */
+const appSandboxAttr = (app) => (app.visibility === "public" ? ` sandbox="${PUBLIC_APP_SANDBOX}"` : "");
+
 /** @param {string} id @param {boolean} [focus] */
 function openApp(id, focus) {
   const app = apps.find(a => a.id === id);
@@ -541,7 +550,7 @@ function openApp(id, focus) {
       <button class="max" title="Maximize">▢</button>
       <button class="close" title="Close">✕</button>
     </div>
-    <iframe src="/app/${encodeURIComponent(id)}/" title="${escapeHtml(app.name)}"></iframe>`;
+    <iframe${appSandboxAttr(app)} src="/app/${encodeURIComponent(id)}/" title="${escapeHtml(app.name)}"></iframe>`;
   $("shell").appendChild(win);
   openWindows.set(id, win);
   layout.windows[id] = { x, y, w: wpx, h: hpx, maximized: !!saved.maximized, minimized: !!saved.minimized };
@@ -1108,6 +1117,7 @@ function openMobileApp(app) {
     const fr = document.createElement("iframe");
     fr.title = app.name;
     fr.dataset.app = app.id;
+    if (app.visibility === "public") fr.setAttribute("sandbox", PUBLIC_APP_SANDBOX); // isolate guest-facing apps
     fr.src = `/app/${encodeURIComponent(app.id)}/`;
     $("mobileframes").append(fr);
   }

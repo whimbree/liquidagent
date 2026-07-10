@@ -80,6 +80,10 @@ pub struct AppState {
     pub served_dir: PathBuf,
     /// $DATA_DIR/attachments — image files pasted into chat. Metadata in the DB.
     pub attachments_dir: PathBuf,
+    /// Per-boot capability the in-VM screenshot tool presents to view private
+    /// apps — handed to the harness at spawn, never to app backends. Replaces
+    /// blanket loopback trust for app surfaces.
+    pub internal_secret: String,
     pub apps_cache: Arc<Mutex<Vec<apps::AppManifest>>>,
     pub backends: Arc<backends::BackendManager>,
     pub deploy: Arc<deploy::DeployManager>,
@@ -111,7 +115,13 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let agent = Agent::start(&config);
+    // Per-boot capability the screenshot tool presents to view private apps.
+    // Handed to the harness at spawn (below), never to app backends. Env override
+    // lets tests share it with a directly-invoked capture.
+    let internal_secret = std::env::var("LIQUID_INTERNAL_SECRET")
+        .unwrap_or_else(|_| data_encoding::HEXLOWER.encode(&rand::random::<[u8; 24]>()));
+
+    let agent = Agent::start(&config, &internal_secret);
     let (client_events, _) = broadcast::channel(CLIENT_EVENT_CAPACITY);
 
     let saved_mode = db.get_setting("pipeline_mode").ok().flatten();
@@ -145,6 +155,7 @@ async fn main() -> anyhow::Result<()> {
         workspace_dir: config.workspace_dir.clone(),
         served_dir,
         attachments_dir,
+        internal_secret,
         apps_cache: Arc::new(Mutex::new(initial_apps)),
         backends,
         deploy,
@@ -287,14 +298,9 @@ async fn main() -> anyhow::Result<()> {
     info!("listening on http://{addr}");
     println!("__READY__");
 
-    // ConnectInfo exposes the peer address so app-access checks can recognize
-    // loopback (in-VM tooling: the agent's screenshot chromium, backends, tests).
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await
         .context("server error")
 }
 
