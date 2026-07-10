@@ -28,6 +28,8 @@ export async function captureAppScreenshot(
   try {
     const proc = Bun.spawn(
       [chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--hide-scrollbars",
+        // VMs often have a tiny /dev/shm; without this chromium crashes there.
+        "--disable-dev-shm-usage",
         "--force-device-scale-factor=1", `--window-size=${width},${height}`,
         "--virtual-time-budget=3000", "--run-all-compositor-stages-before-draw",
         `--screenshot=${out}`, url],
@@ -38,8 +40,16 @@ export async function captureAppScreenshot(
     clearTimeout(killer);
     const file = Bun.file(out);
     if (!(await file.exists())) {
+      // Chromium front-loads harmless warnings (dbus, GL) and prints the fatal
+      // error LAST — report the de-noised tail, or the agent (and the human)
+      // misdiagnose the failure from the noise.
       const err = await new Response(proc.stderr).text();
-      return { ok: false, error: `chromium produced no image: ${err.slice(0, 200)}` };
+      const salient = err
+        .split("\n")
+        .filter((l) => l.trim() && !/dbus/i.test(l))
+        .slice(-4)
+        .join(" | ");
+      return { ok: false, error: `chromium produced no image: ${salient.slice(-300)}` };
     }
     const bytes = await file.arrayBuffer();
     await unlink(out).catch(() => {});

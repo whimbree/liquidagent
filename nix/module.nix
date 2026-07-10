@@ -203,7 +203,10 @@ in
         CapabilityBoundingSet = "";
         RestrictSUIDSGID = true;
         LockPersonality = true;
-        SystemCallFilter = [ "@system-service" ];
+        # @pkey: V8 (the agent's screenshot chromium) allocates memory-protection
+        # keys; without it chromium's child processes die on SIGSYS and every
+        # capture fails with "GPU process isn't usable".
+        SystemCallFilter = [ "@system-service" "@pkey" ];
       };
     };
 
