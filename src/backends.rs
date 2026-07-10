@@ -14,8 +14,9 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
+use axum::body::Body;
 use axum::extract::{Path as UrlPath, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
@@ -182,6 +183,7 @@ impl BackendManager {
 }
 
 // --- reverse proxy: /app/{app}/api/* → the app's backend port ---------------------
+// (and, for surface:"full" apps, the whole /app/{app}/* namespace — see apps.rs)
 
 pub async fn proxy_api(
     State(state): State<AppState>,
@@ -194,6 +196,13 @@ pub async fn proxy_api(
     if let Some(denied) = crate::apps::check_app_access(&state, &app, request.headers(), query.as_deref()) {
         return denied;
     }
+    // Panel apps get the /api prefix stripped (their backend owns only /api).
+    // A full-surface backend owns its WHOLE path space, so it must see the
+    // path as the browser sent it — /api/x, not /x.
+    let path = match crate::apps::app_surface(&state, &app) {
+        crate::apps::Surface::Full => format!("api/{path}"),
+        crate::apps::Surface::Panel => path,
+    };
     proxy(state, app, path, request).await
 }
 
@@ -206,10 +215,17 @@ pub async fn proxy_api_root(
     if let Some(denied) = crate::apps::check_app_access(&state, &app, request.headers(), query.as_deref()) {
         return denied;
     }
-    proxy(state, app, String::new(), request).await
+    let path = match crate::apps::app_surface(&state, &app) {
+        crate::apps::Surface::Full => "api".to_string(),
+        crate::apps::Surface::Panel => String::new(),
+    };
+    proxy(state, app, path, request).await
 }
 
-async fn proxy(state: AppState, app: String, path: String, mut request: axum::extract::Request) -> Response {
+/// Forward one request to the app's backend. `path` is the backend-side path
+/// (no leading slash). WebSocket/upgrade requests get a full upgrade
+/// passthrough. Access control is the CALLER's job (check_app_access).
+pub async fn proxy(state: AppState, app: String, path: String, mut request: axum::extract::Request) -> Response {
     let Some(status) = state.backends.status(&app) else {
         return (
             StatusCode::NOT_FOUND,
@@ -223,15 +239,20 @@ async fn proxy(state: AppState, app: String, path: String, mut request: axum::ex
         .map(|q| format!("?{q}"))
         .unwrap_or_default();
     let target = format!("http://127.0.0.1:{}/{path}{query}", status.port);
-    let Ok(uri) = target.parse() else {
+    let Ok(uri) = target.parse::<axum::http::Uri>() else {
         return StatusCode::BAD_REQUEST.into_response();
     };
+
+    if request.headers().contains_key(header::UPGRADE) {
+        return proxy_upgrade(state, app, uri, request).await;
+    }
+
     *request.uri_mut() = uri;
     // The backend should see itself as the host, not the shell's domain.
-    request.headers_mut().remove(axum::http::header::HOST);
+    request.headers_mut().remove(header::HOST);
 
     match state.http_client.request(request).await {
-        Ok(response) => response.map(axum::body::Body::new).into_response(),
+        Ok(response) => response.map(Body::new).into_response(),
         Err(err) => {
             warn!("proxy to backend {app} failed: {err}");
             (
@@ -244,6 +265,82 @@ async fn proxy(state: AppState, app: String, path: String, mut request: axum::ex
                 .into_response()
         }
     }
+}
+
+/// WebSocket (or any HTTP/1.1 Upgrade) passthrough: forward the handshake to
+/// the backend; if it answers 101, mirror that to the client and splice the
+/// two upgraded byte streams together. Phoenix Channels/LiveView, and anything
+/// else socket-shaped, ride this through `/app/<id>/…`.
+async fn proxy_upgrade(
+    state: AppState,
+    app: String,
+    target: axum::http::Uri,
+    mut request: axum::extract::Request,
+) -> Response {
+    // Take the client's pending-upgrade handle BEFORE forwarding; it resolves
+    // once we return the 101 below.
+    let client_upgrade = hyper::upgrade::on(&mut request);
+
+    let mut forwarded = axum::http::Request::builder()
+        .method(request.method().clone())
+        .uri(target);
+    for (name, value) in request.headers() {
+        if name != header::HOST {
+            forwarded = forwarded.header(name, value);
+        }
+    }
+    // An upgrade handshake carries no body.
+    let forwarded = match forwarded.body(Body::empty()) {
+        Ok(req) => req,
+        Err(err) => {
+            warn!("upgrade to backend {app}: bad handshake request: {err}");
+            return StatusCode::BAD_REQUEST.into_response();
+        }
+    };
+
+    let mut backend_response = match state.http_client.request(forwarded).await {
+        Ok(response) => response,
+        Err(err) => {
+            warn!("upgrade proxy to backend {app} failed: {err}");
+            return StatusCode::BAD_GATEWAY.into_response();
+        }
+    };
+
+    if backend_response.status() != StatusCode::SWITCHING_PROTOCOLS {
+        // The backend declined the upgrade — pass its answer through as-is.
+        return backend_response.map(Body::new).into_response();
+    }
+
+    let backend_upgrade = hyper::upgrade::on(&mut backend_response);
+    tokio::spawn(async move {
+        let (client_io, backend_io) = match tokio::join!(client_upgrade, backend_upgrade) {
+            (Ok(client_io), Ok(backend_io)) => (client_io, backend_io),
+            (client, backend) => {
+                warn!(
+                    "upgrade splice for {app} never established (client ok: {}, backend ok: {})",
+                    client.is_ok(),
+                    backend.is_ok()
+                );
+                return;
+            }
+        };
+        let mut client_io = hyper_util::rt::TokioIo::new(client_io);
+        let mut backend_io = hyper_util::rt::TokioIo::new(backend_io);
+        // Runs for the life of the socket; ends when either side closes.
+        let _ = tokio::io::copy_bidirectional(&mut client_io, &mut backend_io).await;
+    });
+
+    // Mirror the backend's 101 (Sec-WebSocket-Accept & co.) to the client;
+    // returning it makes hyper hand us the client's upgraded stream above.
+    let mut response = Response::builder().status(StatusCode::SWITCHING_PROTOCOLS);
+    if let Some(headers) = response.headers_mut() {
+        for (name, value) in backend_response.headers() {
+            headers.insert(name.clone(), value.clone());
+        }
+    }
+    response
+        .body(Body::empty())
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// Newest mtime anywhere under `dir` — cheap change detection for restart.

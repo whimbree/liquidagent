@@ -14,7 +14,7 @@ const $if = (id) => /** @type {HTMLIFrameElement} */ ($(id));
  * @typedef {{name:string,apps:string[]}} Folder
  * @typedef {{accent?:string,wallpaper?:string}} Appearance
  * @typedef {{windows:Record<string,WinGeom>,chatWindows?:ChatWinGeom[],folders?:Record<string,Folder>,iconOrder?:string[],appearance?:Appearance,chat?:{x:number,y:number,w?:number,h?:number}}} Layout
- * @typedef {{id:string,name:string,icon:string,description:string,visibility?:"public"|"private",has_backend?:boolean,backend?:{state:string},window?:{width?:number,height?:number,minWidth?:number,minHeight?:number}}} App
+ * @typedef {{id:string,name:string,icon:string,description:string,visibility?:"public"|"private",surface?:"panel"|"full",has_backend?:boolean,backend?:{state:string},window?:{width?:number,height?:number,minWidth?:number,minHeight?:number}}} App
  * @typedef {{id:number,title:string,model?:string|null}} Conversation
  * @typedef {{title:string,body:string,ts:number}} TrayNotification
  * @typedef {{el:HTMLElement,wid:number,id:number|null,currentBot:HTMLElement|null,log:HTMLElement,input:HTMLInputElement,send:HTMLButtonElement,stop:HTMLButtonElement,status:HTMLElement,title:HTMLElement,convlist:HTMLElement,geom:WinGeom}} ChatWin

@@ -184,6 +184,82 @@ try {
   });
   check("the declared health path gates status to running", true);
 
+  // --- WebSocket passthrough + surface:"full" (ADR 0003) ---
+  // sock: a normal panel app whose backend speaks WS behind /api/*.
+  // fullapp: surface "full" — NO index.html anywhere; the backend owns the
+  // whole document (HTML at /, assets, POST routes, a socket at /live).
+  console.log("ws proxy + full surface");
+  {
+    const sock = join(WS, "apps", "sock");
+    mkdirSync(sock, { recursive: true });
+    writeFileSync(join(sock, "app.json"), JSON.stringify({
+      name: "Sock", icon: "🔌", visibility: "public",
+      backend: { run: ["bun", "run", "server.ts"] },
+    }));
+    writeFileSync(join(sock, "index.html"), "<!doctype html><h1>sock</h1>");
+    writeFileSync(join(sock, "server.ts"), `
+      Bun.serve({ port: Number(Bun.env.PORT),
+        fetch(req, server) {
+          if (new URL(req.url).pathname === "/ws")
+            return server.upgrade(req) ? undefined : new Response("no", { status: 400 });
+          return new Response("ok");
+        },
+        websocket: { message(ws, m) { ws.send("echo:" + m); } },
+      });`);
+    const full = join(WS, "apps", "fullapp");
+    mkdirSync(full, { recursive: true });
+    writeFileSync(join(full, "app.json"), JSON.stringify({
+      name: "FullApp", icon: "🖼️", visibility: "public", surface: "full",
+      backend: { run: ["bun", "run", "server.ts"], health: "/" },
+    }));
+    writeFileSync(join(full, "server.ts"), `
+      Bun.serve({ port: Number(Bun.env.PORT),
+        async fetch(req, server) {
+          const u = new URL(req.url);
+          if (u.pathname === "/live")
+            return server.upgrade(req) ? undefined : new Response("no", { status: 400 });
+          if (u.pathname === "/")
+            return new Response("<!doctype html><h1>FULL-SURFACE-HOME</h1>", { headers: { "content-type": "text/html" } });
+          if (u.pathname === "/assets/app.js")
+            return new Response("// asset", { headers: { "content-type": "text/javascript" } });
+          if (u.pathname === "/api/echo" && req.method === "POST")
+            return Response.json({ got: await req.text() });
+          return new Response("nope", { status: 404 });
+        },
+        websocket: { message(ws, m) { ws.send("full:" + m); } },
+      });`);
+    git("add -A");
+    git('commit -q -m "add ws + full-surface apps"');
+  }
+  await nudge(token);
+  await until("fullapp root proxied", async () => (await fetch(`${BASE}/app/fullapp/`)).status === 200);
+  check("a full-surface app serves its OWN document (no index.html on disk)",
+    (await (await fetch(`${BASE}/app/fullapp/`)).text()).includes("FULL-SURFACE-HOME"));
+  check("…and its assets through the root wildcard",
+    (await (await fetch(`${BASE}/app/fullapp/assets/app.js`)).text()).includes("asset"));
+  const posted = await fetch(`${BASE}/app/fullapp/api/echo`, { method: "POST", body: "hi" });
+  check("…and non-GET methods, with the /api prefix PRESERVED (it owns its paths)",
+    posted.status === 200 && (await posted.json())?.got === "hi");
+  const wsRoundtrip = (url: string, msg: string) => new Promise<string>((res, rej) => {
+    const s = new WebSocket(url);
+    const t = setTimeout(() => { s.close(); rej(new Error("ws timeout")); }, 8000);
+    s.onopen = () => s.send(msg);
+    s.onmessage = (m) => { clearTimeout(t); s.close(); res(String(m.data)); };
+    s.onerror = () => { clearTimeout(t); rej(new Error("ws error")); };
+  });
+  await until("sock backend up", async () => (await fetch(`${BASE}/app/sock/api/`)).status === 200);
+  check("a WebSocket upgrades through the /api proxy (panel app)",
+    (await wsRoundtrip(`ws://127.0.0.1:${PORT}/app/sock/api/ws`, "ping").catch(String)) === "echo:ping");
+  check("a WebSocket upgrades through the root proxy (full-surface app)",
+    (await wsRoundtrip(`ws://127.0.0.1:${PORT}/app/fullapp/live`, "ping").catch(String)) === "full:ping");
+  check("a WS to a PRIVATE app's backend is refused without auth",
+    await new Promise<boolean>((res) => {
+      const s = new WebSocket(`ws://127.0.0.1:${PORT}/app/declared/api/ws`);
+      const t = setTimeout(() => { s.close(); res(false); }, 8000);
+      s.onopen = () => { clearTimeout(t); s.close(); res(false); };
+      s.onerror = () => { clearTimeout(t); res(true); };
+    }));
+
   // --- app visibility: private by default, cookie authenticates ---
   console.log("app visibility");
   const rawLogin = await fetch(BASE + "/api/auth/login", {

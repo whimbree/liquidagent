@@ -207,6 +207,19 @@ pub fn app_visibility(state: &AppState, app: &str) -> Visibility {
         .unwrap_or(Visibility::Private)
 }
 
+/// Surface of an app by id, from the served-apps cache. Unknown apps fall
+/// back to panel (static serving, which 404s for them anyway).
+pub fn app_surface(state: &AppState, app: &str) -> Surface {
+    state
+        .apps_cache
+        .lock()
+        .expect("apps cache poisoned")
+        .iter()
+        .find(|m| m.id == app)
+        .map(|m| m.surface)
+        .unwrap_or_default()
+}
+
 /// Enforce the access rule for a request to `/app/<id>/*`. Returns an error
 /// response to send, or None when allowed. `raw_query` is the request's query
 /// string (for the screenshot capability).
@@ -328,31 +341,56 @@ pub fn enriched_apps(state: &AppState) -> Vec<serde_json::Value> {
         .collect()
 }
 
-/// GET /app/{app}/{*path} — static files from the app's directory.
-/// Traversal-safe: app id is charset-checked, every path component must be a
-/// plain name.
+/// /app/{app}/{*path} — the app's surface. Panel apps (the default) are
+/// static files from the app's directory, GET/HEAD only, traversal-safe (app
+/// id is charset-checked, every path component must be a plain name). Full-
+/// surface apps own their whole document: every path and method is proxied to
+/// the app's backend, WebSocket upgrades included.
 pub async fn serve_app_file(
     State(state): State<AppState>,
     UrlPath((app, path)): UrlPath<(String, String)>,
-    axum::extract::RawQuery(query): axum::extract::RawQuery,
-    headers: axum::http::HeaderMap,
+    request: axum::extract::Request,
 ) -> Response {
-    if let Some(denied) = check_app_access(&state, &app, &headers, query.as_deref()) {
-        return denied;
-    }
-    serve(state, app, path, query).await
+    serve_or_proxy(state, app, path, request).await
 }
 
 pub async fn serve_app_index(
     State(state): State<AppState>,
     UrlPath(app): UrlPath<String>,
-    axum::extract::RawQuery(query): axum::extract::RawQuery,
-    headers: axum::http::HeaderMap,
+    request: axum::extract::Request,
 ) -> Response {
-    if let Some(denied) = check_app_access(&state, &app, &headers, query.as_deref()) {
+    serve_or_proxy(state, app, String::new(), request).await
+}
+
+async fn serve_or_proxy(
+    state: AppState,
+    app: String,
+    path: String,
+    request: axum::extract::Request,
+) -> Response {
+    let query = request.uri().query().map(str::to_string);
+    if let Some(denied) = check_app_access(&state, &app, request.headers(), query.as_deref()) {
         return denied;
     }
-    serve(state, app, "index.html".to_string(), query).await
+    match app_surface(&state, &app) {
+        Surface::Full => {
+            // The backend serves the document; the screenshot capability still
+            // needs its path-scoped cookie bootstrapped onto the response so
+            // chromium's subresource requests are authorized.
+            let shot_cookie = shot_cookie_for(&state, &app, query.as_deref());
+            let mut response = crate::backends::proxy(state, app, path, request).await;
+            if let Some(cookie) = shot_cookie.and_then(|c| header::HeaderValue::from_str(&c).ok()) {
+                response.headers_mut().append(header::SET_COOKIE, cookie);
+            }
+            response
+        }
+        Surface::Panel => {
+            if !matches!(*request.method(), axum::http::Method::GET | axum::http::Method::HEAD) {
+                return StatusCode::METHOD_NOT_ALLOWED.into_response();
+            }
+            serve(state, app, path, query).await
+        }
+    }
 }
 
 async fn serve(state: AppState, app: String, path: String, query: Option<String>) -> Response {

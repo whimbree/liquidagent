@@ -286,8 +286,10 @@ async fn main() -> anyhow::Result<()> {
             "/app/{app}/api/{*path}",
             axum::routing::any(backends::proxy_api),
         )
-        .route("/app/{app}/", get(apps::serve_app_index))
-        .route("/app/{app}/{*path}", get(apps::serve_app_file))
+        // any(): full-surface apps take every method (and WS upgrades) on
+        // their whole namespace; panel apps enforce GET/HEAD in the handler.
+        .route("/app/{app}/", axum::routing::any(apps::serve_app_index))
+        .route("/app/{app}/{*path}", axum::routing::any(apps::serve_app_file))
         .merge(protected)
         .with_state(state);
 
