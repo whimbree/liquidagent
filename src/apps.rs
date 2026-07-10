@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
 
 use axum::extract::{Path as UrlPath, State};
@@ -42,6 +43,35 @@ pub enum Visibility {
     Private,
 }
 
+/// How the app occupies its surface. `panel` (the default) is today's model:
+/// a static `index.html` served by the supervisor, with an optional backend
+/// behind `/app/<id>/api/*`. `full` means the backend owns the whole document —
+/// every request under `/app/<id>/` (HTML, assets, sockets, any method) is
+/// proxied to it, and no static files are served. (ADR 0003)
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Surface {
+    #[default]
+    Panel,
+    Full,
+}
+
+/// A declared backend runner (ADR 0002): how to start the app's server.
+/// `run` is an argv vector (never a shell string), spawned in the app's
+/// directory with `PORT`, `LIQUID_APP_ID`, and `LIQUID_APP_DATA_DIR` injected.
+/// `health` is an optional HTTP readiness path ("/health"); without it,
+/// readiness is a plain TCP connect. `env` is extra environment (e.g.
+/// MIX_ENV=prod) — additive, never overriding the injected variables.
+#[derive(Clone, Debug, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackendSpec {
+    pub run: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+}
+
 /// What the agent writes to apps/<id>/app.json.
 #[derive(Debug, Deserialize)]
 struct RawManifest {
@@ -54,6 +84,10 @@ struct RawManifest {
     window: Option<AppWindow>,
     #[serde(default)]
     visibility: Visibility,
+    #[serde(default)]
+    surface: Surface,
+    #[serde(default)]
+    backend: Option<BackendSpec>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -66,6 +100,49 @@ pub struct AppManifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window: Option<AppWindow>,
     pub visibility: Visibility,
+    pub surface: Surface,
+    /// The normalized runner: the declared `backend` block, or the synthesized
+    /// Bun default when `backend/index.ts` exists. Not sent to clients — the
+    /// `backend` key in the wire shape is the *status*, injected by
+    /// `enriched_apps`.
+    #[serde(skip_serializing)]
+    pub backend: Option<BackendSpec>,
+}
+
+/// The legacy zero-config contract: `backend/index.ts` present → run it with
+/// Bun. Declared `backend` blocks in app.json take precedence.
+pub const BUN_BACKEND_ENTRY: &str = "backend/index.ts";
+
+fn default_bun_spec() -> BackendSpec {
+    BackendSpec {
+        run: vec!["bun".into(), "run".into(), BUN_BACKEND_ENTRY.into()],
+        health: None,
+        env: HashMap::new(),
+    }
+}
+
+/// Validate a declared backend block, or synthesize the Bun default. A bad
+/// declaration is an error (the app is skipped with a warning — same policy
+/// as a malformed manifest): silently running the wrong thing is worse.
+fn resolve_backend(
+    declared: Option<BackendSpec>,
+    dir: &Path,
+) -> Result<Option<BackendSpec>, String> {
+    match declared {
+        Some(spec) => {
+            if spec.run.is_empty() || spec.run[0].trim().is_empty() {
+                return Err("backend.run must be a non-empty argv array".into());
+            }
+            if let Some(health) = &spec.health {
+                if !health.starts_with('/') {
+                    return Err(format!("backend.health must start with '/', got {health:?}"));
+                }
+            }
+            Ok(Some(spec))
+        }
+        None if dir.join(BUN_BACKEND_ENTRY).exists() => Ok(Some(default_bun_spec())),
+        None => Ok(None),
+    }
 }
 
 /// The access rule for an app surface. Pure so it's exhaustively testable:
@@ -181,26 +258,43 @@ pub fn scan_apps(workspace_dir: &Path) -> Vec<AppManifest> {
                 return None;
             }
             let dir = entry.path();
-            if !dir.join("index.html").exists() {
-                return None;
-            }
             let manifest_path = dir.join(MANIFEST_FILE);
             let raw = std::fs::read_to_string(&manifest_path).ok()?;
-            match serde_json::from_str::<RawManifest>(&raw) {
-                Ok(manifest) => Some(AppManifest {
-                    name: manifest.name,
-                    icon: manifest.icon.unwrap_or_else(|| DEFAULT_ICON.to_string()),
-                    description: manifest.description.unwrap_or_default(),
-                    has_backend: dir.join(crate::backends::BACKEND_ENTRY).exists(),
-                    window: manifest.window,
-                    visibility: manifest.visibility,
-                    id,
-                }),
+            let manifest = match serde_json::from_str::<RawManifest>(&raw) {
+                Ok(manifest) => manifest,
                 Err(err) => {
                     warn!("skipping app {id}: bad {MANIFEST_FILE}: {err}");
-                    None
+                    return None;
                 }
+            };
+            let backend = match resolve_backend(manifest.backend, &dir) {
+                Ok(backend) => backend,
+                Err(why) => {
+                    warn!("skipping app {id}: {why}");
+                    return None;
+                }
+            };
+            // A panel app IS its static index.html; a full-surface app IS its
+            // backend. An app with neither has nothing to serve.
+            match manifest.surface {
+                Surface::Panel if !dir.join("index.html").exists() => return None,
+                Surface::Full if backend.is_none() => {
+                    warn!("skipping app {id}: surface \"full\" requires a backend");
+                    return None;
+                }
+                _ => {}
             }
+            Some(AppManifest {
+                name: manifest.name,
+                icon: manifest.icon.unwrap_or_else(|| DEFAULT_ICON.to_string()),
+                description: manifest.description.unwrap_or_default(),
+                has_backend: backend.is_some(),
+                window: manifest.window,
+                visibility: manifest.visibility,
+                surface: manifest.surface,
+                backend,
+                id,
+            })
         })
         .collect();
     apps.sort_by(|a, b| a.id.cmp(&b.id));
@@ -649,6 +743,94 @@ mod tests {
         // no visibility field = private: apps must opt IN to guests
         assert_eq!(vis("legacy"), Visibility::Private);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn backend_declarations_parse_synthesize_and_validate() {
+        let root = std::env::temp_dir().join(format!("liquid-be-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let make = |id: &str, manifest: &str, files: &[&str]| {
+            let dir = root.join("apps").join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("app.json"), manifest).unwrap();
+            for f in files {
+                let p = dir.join(f);
+                std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+                std::fs::write(p, "x").unwrap();
+            }
+        };
+        // declared polyglot runner (+ env, + health)
+        make(
+            "phx",
+            r#"{"name":"Phx","surface":"full","backend":{"run":["mix","phx.server"],"health":"/health","env":{"MIX_ENV":"prod"}}}"#,
+            &["mix.exs"],
+        );
+        // legacy zero-config bun backend, synthesized
+        make("legacy", r#"{"name":"Legacy"}"#, &["index.html", "backend/index.ts"]);
+        // declared run wins over a present backend/index.ts
+        make(
+            "custom",
+            r#"{"name":"Custom","backend":{"run":["bun","run","server.ts"]}}"#,
+            &["index.html", "server.ts", "backend/index.ts"],
+        );
+        // invalid declarations are skipped, not half-run
+        make("emptyrun", r#"{"name":"E","backend":{"run":[]}}"#, &["index.html"]);
+        make(
+            "badhealth",
+            r#"{"name":"B","backend":{"run":["bun","x"],"health":"health"}}"#,
+            &["index.html"],
+        );
+        // full surface without a backend has nothing to serve
+        make("fullnobackend", r#"{"name":"F","surface":"full"}"#, &["index.html"]);
+        // panel app without index.html is not an app
+        make("noindex", r#"{"name":"N","backend":{"run":["bun","x"]}}"#, &[]);
+
+        let apps = scan_apps(&root);
+        let ids: Vec<&str> = apps.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, vec!["custom", "legacy", "phx"]);
+
+        let get = |id: &str| apps.iter().find(|a| a.id == id).unwrap();
+        let phx = get("phx");
+        assert_eq!(phx.surface, Surface::Full);
+        let spec = phx.backend.as_ref().unwrap();
+        assert_eq!(spec.run, vec!["mix", "phx.server"]);
+        assert_eq!(spec.health.as_deref(), Some("/health"));
+        assert_eq!(spec.env.get("MIX_ENV").map(String::as_str), Some("prod"));
+        assert!(phx.has_backend);
+
+        let legacy = get("legacy");
+        assert_eq!(legacy.surface, Surface::Panel);
+        assert_eq!(legacy.backend.as_ref().unwrap().run, vec!["bun", "run", BUN_BACKEND_ENTRY]);
+
+        assert_eq!(get("custom").backend.as_ref().unwrap().run, vec!["bun", "run", "server.ts"]);
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn manifest_wire_shape_hides_the_runner_spec() {
+        // Clients get `surface` and `has_backend`; the `backend` key on the
+        // wire is the runtime STATUS injected by enriched_apps — the runner
+        // spec must not collide with it.
+        let manifest = AppManifest {
+            id: "x".into(),
+            name: "X".into(),
+            icon: "🧪".into(),
+            description: String::new(),
+            has_backend: true,
+            window: None,
+            visibility: Visibility::Private,
+            surface: Surface::Full,
+            backend: Some(BackendSpec {
+                run: vec!["mix".into(), "phx.server".into()],
+                health: None,
+                env: HashMap::new(),
+            }),
+        };
+        let wire = serde_json::to_value(&manifest).unwrap();
+        assert_eq!(wire["surface"], "full");
+        assert_eq!(wire["has_backend"], true);
+        assert!(wire.get("backend").is_none());
     }
 
     #[test]

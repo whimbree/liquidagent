@@ -145,6 +145,45 @@ try {
   await until("good served", async () => (await app("/app/good/")).status === 200);
   check("reviewed+approved deploys", (await j("/api/pipeline", {}, token)).body?.status?.state === "clean");
 
+  // --- polyglot backends (ADR 0002): a DECLARED runner, not the bun default ---
+  // The app declares its own argv (custom entrypoint at the app root — no
+  // backend/index.ts anywhere), a health path the supervisor must poll, and
+  // extra env. Proves the run contract: PORT + LIQUID_APP_ID +
+  // LIQUID_APP_DATA_DIR injected, declared env passed through.
+  console.log("polyglot backend (declared run)");
+  {
+    const dir = join(WS, "apps", "declared");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "app.json"), JSON.stringify({
+      name: "Declared", icon: "🧪",
+      backend: { run: ["bun", "run", "server.ts"], health: "/health", env: { GREETING: "polyglot" } },
+    }));
+    writeFileSync(join(dir, "index.html"), "<!doctype html><h1>declared</h1>");
+    writeFileSync(join(dir, "server.ts"), `
+      Bun.serve({ port: Number(Bun.env.PORT), fetch(req) {
+        const p = new URL(req.url).pathname;
+        if (p === "/health") return new Response("ok");
+        if (p === "/whoami") return Response.json({
+          app: Bun.env.LIQUID_APP_ID, data: Bun.env.LIQUID_APP_DATA_DIR, greeting: Bun.env.GREETING,
+        });
+        return new Response("nope", { status: 404 });
+      }});`);
+    git("add -A");
+    git('commit -q -m "add declared-runner app"');
+  }
+  await nudge(token);
+  await until("declared backend healthy", async () => (await app("/app/declared/api/health")).status === 200);
+  const who = await (await app("/app/declared/api/whoami")).json();
+  check("declared argv runs (custom entrypoint, no backend/index.ts)", who?.app === "declared");
+  check("run contract injects LIQUID_APP_DATA_DIR (the app's data/ dir)",
+    typeof who?.data === "string" && who.data.endsWith("/apps/declared/data"));
+  check("declared env rides along", who?.greeting === "polyglot");
+  await until("declared health-gated status is running", async () => {
+    const apps = (await j("/api/apps", {}, token)).body?.apps ?? [];
+    return apps.find((a: any) => a.id === "declared")?.backend?.state === "running";
+  });
+  check("the declared health path gates status to running", true);
+
   // --- app visibility: private by default, cookie authenticates ---
   console.log("app visibility");
   const rawLogin = await fetch(BASE + "/api/auth/login", {

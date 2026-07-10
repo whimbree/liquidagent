@@ -606,12 +606,15 @@ fn refresh_served_apps(state: &AppState) {
 }
 
 fn sync_backends(manager: &Arc<backends::BackendManager>, apps: &[apps::AppManifest]) {
-    let with_backend: Vec<String> = apps
+    let targets: Vec<backends::BackendTarget> = apps
         .iter()
-        .filter(|app| app.has_backend)
-        .map(|app| app.id.clone())
+        .filter_map(|app| {
+            app.backend
+                .clone()
+                .map(|spec| backends::BackendTarget { id: app.id.clone(), spec })
+        })
         .collect();
-    manager.sync(&with_backend);
+    manager.sync(&targets);
 }
 
 fn conversation_id_of(event: &AgentEvent) -> Option<i64> {

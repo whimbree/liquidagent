@@ -1,8 +1,11 @@
 # ADR 0002 — Polyglot backends (declared run/toolchain), buildless-first
 
-- **Status:** Accepted — 2026-07-08 (trimmed to the YAGNI core; see *Deferred*)
+- **Status:** Accepted — 2026-07-08 (trimmed to the YAGNI core; see *Deferred*).
+  **Implemented — 2026-07-10** (`backend.run`/`health`/`env`; `toolchain` and
+  `build` deferred — see *As implemented*)
 - **Deciders:** Bree
-- **Relates to:** ADR 0001 (typing), ROADMAP P2 (isolation)
+- **Relates to:** ADR 0001 (typing), ADR 0003 (full-surface apps + WS proxy),
+  ROADMAP P2 (isolation)
 
 ## Context
 
@@ -22,24 +25,30 @@ only when a concrete app forces it.
 
 ### 1. Manifest gains a declared backend runner (additive)
 
+**As implemented** (`src/apps.rs` `BackendSpec`, `src/backends.rs`):
+
 ```json
 {
-  "name": "Timers", "icon": "⏱️",
+  "name": "Whiteboard", "icon": "🎨",
   "backend": {
-    "toolchain": ["go_1_22"],                          // nixpkgs attrs on PATH
-    "build": "go build -o .bin/server ./cmd/server",   // optional; runs once pre-run
-    "run": ".bin/server",                              // how to START; PORT injected
-    "health": "/health"                                 // optional readiness gate
+    "run": ["mix", "phx.server"],   // argv VECTOR (never a shell string); PORT injected
+    "health": "/health",            // optional HTTP readiness path (else: TCP connect)
+    "env": {"MIX_ENV": "prod"}      // optional extra env; platform vars always win
   }
 }
 ```
 
-`backends.rs` generalizes from "spawn bun" to "spawn `run` with `toolchain` on
-PATH." **Defaults preserve today:** `backend/index.ts` present and no `run` →
-`bun run backend/index.ts`; no `backend` → KV-only. Port allocation, 3-strike
-crash policy, restart-on-change, and the `/app/<id>/api/*` proxy are unchanged.
+`run` is an argv vector, not a shell string — no quoting bugs, no injection
+surface, typed end to end (ADR 0001: a closed contract, validated at the
+manifest edge; a bad declaration skips the app with a warning rather than
+half-running it). **Defaults preserve today:** `backend/index.ts` present and
+no `backend` block → `["bun", "run", "backend/index.ts"]`; neither → KV-only.
+Port allocation, 3-strike crash policy, restart-on-change (now the whole app
+dir, ignoring `node_modules/`, `data/`, `_build/`, `deps/`), and the
+`/app/<id>/api/*` proxy are unchanged.
 
-**The run contract** (supervisor → process, via env):
+**The run contract** (supervisor → process, via env; these override any
+declared `env` on collision):
 
 | env | meaning |
 |---|---|
@@ -47,7 +56,22 @@ crash policy, restart-on-change, and the `/app/<id>/api/*` proxy are unchanged.
 | `LIQUID_APP_ID` | the app id |
 | `LIQUID_APP_DATA_DIR` | per-app writable dir (gitignored `data/`) |
 
-Any language reads `PORT` and serves (Go: `os.Getenv("PORT")`).
+Any language reads `PORT` and serves (Elixir:
+`System.get_env("PORT")`, Go: `os.Getenv("PORT")`).
+
+**Readiness** (`health`): declared → the supervisor polls HTTP GET on that
+path until 2xx; undeclared → a TCP connect suffices. Either way polling never
+gives up while the process lives (fast for ~15s, then slow) — a backend that
+compiles on first boot (mix, go build) flips to Running whenever it finally
+listens.
+
+**Deferred from the original draft** (add when a concrete app forces it):
+`toolchain` (nixpkgs attrs resolved via `nix shell`) and `build` (a pre-run
+compile step). Today the runtime comes from the host PATH — the dev shell and
+the NixOS module's `path` provide `bun` (and `elixir` for the whiteboard);
+build-on-boot (mix does this itself) covers the compile step. `nix shell`
+resolution would break the offline test gate and adds a moving part no app
+needs yet.
 
 ### 2. Frontends stay buildless
 
