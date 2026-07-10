@@ -54,8 +54,32 @@ pub fn create_session(db: &Db) -> anyhow::Result<String> {
     let mut bytes = [0u8; TOKEN_BYTES];
     rand::rng().fill_bytes(&mut bytes);
     let token = HEXLOWER.encode(&bytes);
-    db.insert_auth_session(&hash_token(&token), SESSION_TTL_SECS)?;
+    // Password login mints owner sessions; other roles (guest) arrive with the
+    // guest shell / SSO and will mint through their own paths.
+    db.insert_auth_session(&hash_token(&token), SESSION_TTL_SECS, "owner")?;
     Ok(token)
+}
+
+/// The HttpOnly cookie that lets same-origin app iframes authenticate — they
+/// can't attach Authorization headers, but cookies ride every subresource
+/// request. Value is the same session token the shell holds.
+pub const SESSION_COOKIE: &str = "liquid_session";
+
+/// `Set-Cookie` value binding the session cookie to `token`. No `Secure`
+/// attribute: TLS terminates at the reverse proxy and dev runs plain http.
+pub fn session_cookie(token: &str) -> String {
+    format!("{SESSION_COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL_SECS}")
+}
+
+/// Role of the live session carried by the request's cookie (None = no/invalid
+/// cookie). This is what private-app access checks — and what a future guest
+/// shell will read.
+pub fn cookie_session_role(db: &Db, headers: &axum::http::HeaderMap) -> Option<String> {
+    let cookies = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
+    let token = cookies
+        .split(';')
+        .find_map(|c| c.trim().strip_prefix("liquid_session="))?;
+    db.auth_session_role(&hash_token(token)).ok().flatten()
 }
 
 pub fn validate_token(db: &Db, token: &str) -> bool {

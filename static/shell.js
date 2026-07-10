@@ -63,7 +63,13 @@ async function boot() {
   passwordIsSet = status.password_set;
   if (token && passwordIsSet) {
     const probe = await fetch("/api/apps", { headers: { Authorization: `Bearer ${token}` } });
-    if (probe.ok) { enterShell((await probe.json()).apps); return; }
+    if (probe.ok) {
+      // (Re)mint the HttpOnly session cookie before any app iframe loads —
+      // private apps authenticate by cookie (iframes can't attach headers).
+      // Login responses set it too; this covers sessions from before it existed.
+      await fetch("/api/auth/cookie", { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+      enterShell((await probe.json()).apps); return;
+    }
     token = null; localStorage.removeItem("liquid_token");
   }
   showLogin(!passwordIsSet);

@@ -30,6 +30,18 @@ pub struct AppWindow {
     pub min_height: Option<u32>,
 }
 
+/// Who may reach an app's surfaces (static files + backend proxy). Private is
+/// the default: only a logged-in owner (session cookie) or loopback (the
+/// supervisor's own tooling — e.g. the agent's screenshot chromium) gets in.
+/// Public apps opt in to guests: anyone who reaches the host, no liquid login.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    Public,
+    #[default]
+    Private,
+}
+
 /// What the agent writes to apps/<id>/app.json.
 #[derive(Debug, Deserialize)]
 struct RawManifest {
@@ -40,6 +52,8 @@ struct RawManifest {
     description: Option<String>,
     #[serde(default)]
     window: Option<AppWindow>,
+    #[serde(default)]
+    visibility: Visibility,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -51,6 +65,46 @@ pub struct AppManifest {
     pub has_backend: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window: Option<AppWindow>,
+    pub visibility: Visibility,
+}
+
+/// The access rule for an app surface. Pure so it's exhaustively testable:
+/// public is open; otherwise loopback (in-VM tooling) or an owner session.
+pub fn app_access_allowed(visibility: Visibility, is_loopback: bool, is_owner_session: bool) -> bool {
+    match visibility {
+        Visibility::Public => true,
+        Visibility::Private => is_loopback || is_owner_session,
+    }
+}
+
+/// Visibility of an app by id, from the served-apps cache. Unknown apps are
+/// treated as private (deny by default; the file read 404s anyway).
+pub fn app_visibility(state: &AppState, app: &str) -> Visibility {
+    state
+        .apps_cache
+        .lock()
+        .expect("apps cache poisoned")
+        .iter()
+        .find(|m| m.id == app)
+        .map(|m| m.visibility)
+        .unwrap_or(Visibility::Private)
+}
+
+/// Enforce the access rule for a request to `/app/<id>/*`. Returns an error
+/// response to send, or None when allowed.
+pub fn check_app_access(
+    state: &AppState,
+    app: &str,
+    peer: std::net::SocketAddr,
+    headers: &axum::http::HeaderMap,
+) -> Option<Response> {
+    let vis = app_visibility(state, app);
+    let is_owner = crate::auth::cookie_session_role(&state.db, headers).as_deref() == Some("owner");
+    if app_access_allowed(vis, peer.ip().is_loopback(), is_owner) {
+        None
+    } else {
+        Some((StatusCode::UNAUTHORIZED, "sign in to liquid to open this app").into_response())
+    }
 }
 
 /// Scan workspace/apps/*/app.json. Malformed manifests are skipped with a
@@ -83,6 +137,7 @@ pub fn scan_apps(workspace_dir: &Path) -> Vec<AppManifest> {
                     description: manifest.description.unwrap_or_default(),
                     has_backend: dir.join(crate::backends::BACKEND_ENTRY).exists(),
                     window: manifest.window,
+                    visibility: manifest.visibility,
                     id,
                 }),
                 Err(err) => {
@@ -128,15 +183,25 @@ pub fn enriched_apps(state: &AppState) -> Vec<serde_json::Value> {
 /// plain name.
 pub async fn serve_app_file(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     UrlPath((app, path)): UrlPath<(String, String)>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
+    if let Some(denied) = check_app_access(&state, &app, peer, &headers) {
+        return denied;
+    }
     serve(state, app, path).await
 }
 
 pub async fn serve_app_index(
     State(state): State<AppState>,
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     UrlPath(app): UrlPath<String>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
+    if let Some(denied) = check_app_access(&state, &app, peer, &headers) {
+        return denied;
+    }
     serve(state, app, "index.html".to_string()).await
 }
 
@@ -499,5 +564,41 @@ mod tests {
         assert!(apps.iter().find(|a| a.id == "plain").unwrap().window.is_none());
 
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn visibility_defaults_private_and_parses_public() {
+        let root = std::env::temp_dir().join(format!("liquid-vis-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for (id, manifest) in [
+            ("open", r#"{"name":"Open","visibility":"public"}"#),
+            ("closed", r#"{"name":"Closed","visibility":"private"}"#),
+            ("legacy", r#"{"name":"Legacy"}"#),
+        ] {
+            let dir = root.join("apps").join(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("app.json"), manifest).unwrap();
+            std::fs::write(dir.join("index.html"), "<h1>x</h1>").unwrap();
+        }
+        let apps = scan_apps(&root);
+        let vis = |id: &str| apps.iter().find(|a| a.id == id).unwrap().visibility;
+        assert_eq!(vis("open"), Visibility::Public);
+        assert_eq!(vis("closed"), Visibility::Private);
+        // no visibility field = private: apps must opt IN to guests
+        assert_eq!(vis("legacy"), Visibility::Private);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn app_access_rule_is_exhaustive() {
+        use Visibility::{Private, Public};
+        // public: open to everyone, no session needed
+        assert!(app_access_allowed(Public, false, false));
+        // private: loopback (in-VM tooling: screenshot chromium, backends, tests) OK
+        assert!(app_access_allowed(Private, true, false));
+        // private: a logged-in owner (session cookie) OK
+        assert!(app_access_allowed(Private, false, true));
+        // private: a remote guest with no session is DENIED — the point of the rule
+        assert!(!app_access_allowed(Private, false, false));
     }
 }

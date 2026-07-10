@@ -52,6 +52,10 @@ To create an app called (for example) timer:
   "minWidth": 260, "minHeight": 360} to declare the desktop window's opening
   size — set it to fit the app (a calculator small, a dashboard wide); omit for
   the default. The user can still resize, and their size is remembered per app.
+  Optional: "visibility": "public" makes the app reachable by ANYONE with the
+  host's address, no liquid login — only set it when your human explicitly wants
+  a guest-facing app (a shared board, a public page). Default is private: only
+  your logged-in human (and you) can open it.
 - apps/timer/index.html — a COMPLETE, self-contained page. Vanilla HTML/CSS/JS
   (inline or separate files in the same directory). No CDNs, no frameworks,
   no build tools. It renders inside an iframe.

@@ -94,7 +94,17 @@ pub async fn auth_setup(
     }
     auth::set_password(&state.db, &body.password)?;
     let token = auth::create_session(&state.db)?;
-    Ok(Json(json!({ "token": token })).into_response())
+    Ok(session_response(&token))
+}
+
+/// Token in the JSON body (the shell stores it for API calls) AND as an
+/// HttpOnly cookie (app iframes can't attach headers; cookies ride along).
+fn session_response(token: &str) -> Response {
+    (
+        [(axum::http::header::SET_COOKIE, auth::session_cookie(token))],
+        Json(json!({ "token": token })),
+    )
+        .into_response()
 }
 
 pub async fn auth_login(
@@ -109,7 +119,31 @@ pub async fn auth_login(
             .into_response());
     }
     let token = auth::create_session(&state.db)?;
-    Ok(Json(json!({ "token": token })).into_response())
+    Ok(session_response(&token))
+}
+
+/// Re-issue the session cookie from a Bearer token (behind require_auth).
+/// Lets devices logged in before cookies existed mint one without re-login;
+/// the shell calls it once at boot.
+pub async fn auth_cookie(
+    Query(query): Query<TokenQuery>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_string)
+        .or(query.token);
+    match token {
+        // require_auth already validated it; just bind the cookie.
+        Some(token) => (
+            StatusCode::NO_CONTENT,
+            [(axum::http::header::SET_COOKIE, auth::session_cookie(&token))],
+        )
+            .into_response(),
+        None => StatusCode::UNAUTHORIZED.into_response(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -144,7 +178,7 @@ pub async fn auth_change_password(
     auth::set_password(&state.db, &body.new_password)?;
     state.db.clear_auth_sessions()?;
     let token = auth::create_session(&state.db)?;
-    Ok(Json(json!({ "token": token })).into_response())
+    Ok(session_response(&token))
 }
 
 // --- auth middleware ------------------------------------------------------------

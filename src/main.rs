@@ -177,6 +177,7 @@ async fn main() -> anyhow::Result<()> {
             "/api/auth/change_password",
             axum::routing::post(api::auth_change_password),
         )
+        .route("/api/auth/cookie", axum::routing::post(api::auth_cookie))
         .route("/api/settings", get(api::get_settings).put(api::put_settings))
         .route("/api/apps", get(apps::list_apps))
         .route("/api/apps/{app}/log", get(apps::app_log))
@@ -255,8 +256,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/status", get(api::auth_status))
         .route("/api/auth/setup", axum::routing::post(api::auth_setup))
         .route("/api/auth/login", axum::routing::post(api::auth_login))
-        // App static files are public: iframes and their relative asset
-        // fetches can't attach auth headers. Data stays behind /api auth.
+        // App routes sit outside require_auth because iframes can't attach
+        // headers — instead each handler enforces the app's visibility rule
+        // (apps::check_app_access): private (the default) needs the HttpOnly
+        // session cookie or a loopback peer; "visibility": "public" opts into
+        // guests. Data stays behind /api auth.
         // Backend proxy first — the static "api" segment outranks the
         // wildcard, so /app/x/api/* reaches the app's backend.
         .route(
@@ -283,9 +287,14 @@ async fn main() -> anyhow::Result<()> {
     info!("listening on http://{addr}");
     println!("__READY__");
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
+    // ConnectInfo exposes the peer address so app-access checks can recognize
+    // loopback (in-VM tooling: the agent's screenshot chromium, backends, tests).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
         .context("server error")
 }
 

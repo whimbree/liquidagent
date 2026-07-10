@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS auth_sessions (
     token_hash TEXT PRIMARY KEY,
     created_at INTEGER NOT NULL,
-    expires_at INTEGER NOT NULL
+    expires_at INTEGER NOT NULL,
+    role       TEXT NOT NULL DEFAULT 'owner'
 );
 CREATE TABLE IF NOT EXISTS kv (
     app        TEXT NOT NULL,
@@ -124,6 +125,13 @@ impl Db {
         if let Err(err) = conn.execute("ALTER TABLE conversations ADD COLUMN model TEXT", []) {
             if !err.to_string().contains("duplicate column") {
                 return Err(err).context("adding conversations.model column");
+            }
+        }
+        if let Err(err) =
+            conn.execute("ALTER TABLE auth_sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'owner'", [])
+        {
+            if !err.to_string().contains("duplicate column") {
+                return Err(err).context("adding auth_sessions.role column");
             }
         }
         Ok(Self {
@@ -378,13 +386,27 @@ impl Db {
 
     // --- auth sessions ---------------------------------------------------------
 
-    pub fn insert_auth_session(&self, token_hash: &str, ttl_secs: i64) -> anyhow::Result<()> {
+    pub fn insert_auth_session(&self, token_hash: &str, ttl_secs: i64, role: &str) -> anyhow::Result<()> {
         let ts = now();
         self.lock().execute(
-            "INSERT INTO auth_sessions (token_hash, created_at, expires_at) VALUES (?1, ?2, ?3)",
-            rusqlite::params![token_hash, ts, ts + ttl_secs],
+            "INSERT INTO auth_sessions (token_hash, created_at, expires_at, role) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![token_hash, ts, ts + ttl_secs, role],
         )?;
         Ok(())
+    }
+
+    /// The role of a live session (None = invalid/expired). The primitive the
+    /// guest shell and SSO will build on: today only "owner" sessions exist.
+    pub fn auth_session_role(&self, token_hash: &str) -> anyhow::Result<Option<String>> {
+        let conn = self.lock();
+        conn.execute("DELETE FROM auth_sessions WHERE expires_at < ?1", [now()])?;
+        Ok(conn
+            .query_row(
+                "SELECT role FROM auth_sessions WHERE token_hash = ?1 AND expires_at >= ?2",
+                rusqlite::params![token_hash, now()],
+                |row| row.get(0),
+            )
+            .optional()?)
     }
 
     /// Revoke every session. Used on a password change: rotating the password
@@ -485,8 +507,8 @@ mod tests {
     #[test]
     fn auth_sessions_expire() {
         let db = Db::open_in_memory().unwrap();
-        db.insert_auth_session("fresh", 3600).unwrap();
-        db.insert_auth_session("stale", -10).unwrap();
+        db.insert_auth_session("fresh", 3600, "owner").unwrap();
+        db.insert_auth_session("stale", -10, "owner").unwrap();
         assert!(db.auth_session_valid("fresh").unwrap());
         assert!(!db.auth_session_valid("stale").unwrap());
         assert!(!db.auth_session_valid("unknown").unwrap());
@@ -495,8 +517,8 @@ mod tests {
     #[test]
     fn clear_auth_sessions_revokes_all() {
         let db = Db::open_in_memory().unwrap();
-        db.insert_auth_session("a", 3600).unwrap();
-        db.insert_auth_session("b", 3600).unwrap();
+        db.insert_auth_session("a", 3600, "owner").unwrap();
+        db.insert_auth_session("b", 3600, "owner").unwrap();
         assert!(db.auth_session_valid("a").unwrap());
         db.clear_auth_sessions().unwrap();
         assert!(!db.auth_session_valid("a").unwrap());

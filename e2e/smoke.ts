@@ -10,7 +10,7 @@
  */
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { execSync, spawn } from "node:child_process";
-import { tmpdir } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import { join } from "node:path";
 
 const PORT = 3199;
@@ -72,6 +72,7 @@ const server = spawn("cargo", ["run", "--quiet"], {
     LIQUID_WORKSPACE_DIR: WS,
     LIQUID_DATA_DIR: DATA,
     LIQUID_PIPELINE_MODE: "reviewed",
+    LIQUID_HOST: "0.0.0.0", // so the remote-denial checks can hit a non-loopback address
   },
   stdio: ["ignore", "ignore", "inherit"],
 });
@@ -136,6 +137,28 @@ try {
   await nudge(token);
   await until("good served", async () => (await fetch(BASE + "/app/good/")).status === 200);
   check("reviewed+approved deploys", (await j("/api/pipeline", {}, token)).body?.status?.state === "clean");
+
+  // --- app visibility: private by default, cookie authenticates ---
+  console.log("app visibility");
+  const rawLogin = await fetch(BASE + "/api/auth/login", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password: NEWPASS }),
+  });
+  check("login sets the HttpOnly session cookie", (rawLogin.headers.get("set-cookie") || "").includes("liquid_session="));
+  const cookieMint = await fetch(BASE + "/api/auth/cookie", { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+  check("an existing session can mint the cookie", cookieMint.status === 204 && (cookieMint.headers.get("set-cookie") || "").includes("liquid_session="));
+  // Loopback always passes (in-VM tooling: screenshot chromium, backends, tests);
+  // the deny path needs a NON-loopback address, so hit our own LAN IP.
+  const lan = Object.values(networkInterfaces()).flat().find((i) => i && !i.internal && i.family === "IPv4")?.address;
+  if (lan) {
+    const R = `http://${lan}:${PORT}`;
+    check("a private app is denied from a remote address (401)", (await fetch(`${R}/app/good/`)).status === 401);
+    check("…and its backend proxy is denied too", (await fetch(`${R}/app/good/api/x`)).status === 401);
+    check("…but the session cookie opens it", (await fetch(`${R}/app/good/`, { headers: { Cookie: `liquid_session=${token}` } })).status === 200);
+    check("…and a bogus cookie does not", (await fetch(`${R}/app/good/`, { headers: { Cookie: "liquid_session=deadbeef" } })).status === 401);
+  } else {
+    console.log("  (skip) no non-loopback interface for remote-denial checks");
+  }
 
   // --- graduation ---
   console.log("graduation");
