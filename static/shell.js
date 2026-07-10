@@ -824,9 +824,11 @@ let chatWinSeq = 0;
 /** @param {HTMLElement} win @param {(() => void)=} onDrop */
 function enableWinDrag(win, onDrop) {
   const bar = /** @type {HTMLElement} */ (win.querySelector(".titlebar"));
-  bar.addEventListener("dblclick", (e) => { if (/** @type {Element|null} */(e.target)?.tagName !== "BUTTON") toggleMaximize(win); });
+  bar.addEventListener("dblclick", (e) => { if (!(/** @type {Element|null} */(e.target)?.closest("button, select, input"))) toggleMaximize(win); });
   bar.addEventListener("pointerdown", (e) => {
-    if (/** @type {Element|null} */(e.target)?.tagName === "BUTTON") return;
+    // Same rule as the chat header: never steal pointerdown from interactive
+    // controls, or their native behavior (select dropdowns) silently dies.
+    if (/** @type {Element|null} */(e.target)?.closest("button, select, input")) return;
     e.preventDefault();
     bringToFront(win);
     win.classList.add("dragging");
@@ -1407,7 +1409,10 @@ addEventListener("keyup", (e) => { if (switcher && !e.ctrlKey) commitSwitcher();
 
 // drag the chat panel by its header (desktop)
 /** @type {HTMLElement} */ ($("chat").querySelector("header")).addEventListener("pointerdown", (e) => {
-  if (isMobile() || /** @type {Element|null} */(e.target)?.tagName === "BUTTON") return;
+  // Interactive controls in the header (buttons, the model <select>) must keep
+  // their native pointerdown — preventDefault() here silently kills a select's
+  // dropdown, which is invisible breakage.
+  if (isMobile() || /** @type {Element|null} */(e.target)?.closest("button, select, input")) return;
   e.preventDefault();
   const chat = $("chat");
   const startX = e.clientX - chat.offsetLeft;

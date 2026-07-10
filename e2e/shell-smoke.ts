@@ -169,6 +169,16 @@ try {
 
   check("the desktop chat is resizable like a window", (await page.$eval("#chat", (e) => getComputedStyle(e).resize)) === "both");
 
+  // The chat header doubles as a drag handle; its pointerdown handler must NOT
+  // preventDefault on interactive controls — that silently kills the model
+  // <select>'s native dropdown (regression: "can't click the model selector").
+  check("the header drag handle leaves the model picker's pointerdown alone",
+    await page.$eval("#modelpick", (sel) => {
+      const ev = new PointerEvent("pointerdown", { bubbles: true, cancelable: true });
+      sel.dispatchEvent(ev);
+      return !ev.defaultPrevented;
+    }));
+
   // new-chat race: send the first message of a fresh chat and switch away
   // IMMEDIATELY. The id now binds at send time (REST create before ws.send), so
   // the reply can't stream into a conversation no surface owns.
