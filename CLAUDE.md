@@ -41,7 +41,7 @@ Two git trees, and the difference is the whole security model:
 | `ws.rs` | Chat WebSocket. `ClientMessage` in, `ServerEvent` out (the client-facing event union) |
 | `api.rs` | REST: conversations, auth, pipeline. `require_auth` middleware (Bearer or `?token=`) |
 | `apps.rs` | App manifest scanning, traversal-safe static serving, per-app KV, `SHELL.json`, per-app git log |
-| `backends.rs` | Per-app Bun backend lifecycle (spawn/restart/crash-policy) + the `/app/<id>/api/*` reverse proxy |
+| `backends.rs` | Per-app backend lifecycle (declared `backend.run` argv per ADR 0002, Bun default; spawn/restart/crash-policy) + the reverse proxy (`/app/<id>/api/*`, whole namespace for `surface:"full"`, WebSocket upgrade passthrough) |
 | `deploy.rs` | `DeployManager`: the worktree, pipeline modes (vibe/reviewed), the review gate |
 | `scheduler.rs` | 60s tick; PULSE + CRON from workspace JSON → agent queries in the "⏰ Scheduled" conversation |
 | `push.rs` | Web Push: RFC 8291 (aes128gcm) + RFC 8292 (VAPID), hand-rolled on p256/hkdf/aes-gcm |
@@ -102,6 +102,8 @@ bun run e2e/smoke.ts              # API smoke: auth/apps/KV/traversal/pipeline/
                                   # graduation/persistence. No credentials, CI-safe.
 bun run e2e/shell-smoke.ts        # shell smoke: drives the real shell in headless
                                   # chromium (login/app-window/WM/chat/palette).
+bun run e2e/whiteboard.ts         # polyglot proof: Phoenix backend (mix), full
+                                  # surface, WS channels, two guest browsers.
 nix build .#checks.x86_64-linux.module-boots   # boots the NixOS module in a VM
 ```
 
