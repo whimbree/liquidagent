@@ -395,7 +395,15 @@ $("folder-view").onclick = (e) => { if (e.target === $("folder-view")) closeFold
 
 /* ---- app context menu: lifecycle actions are conversations ---- */
 /** @param {string} prefill */
-function askLiquid(prefill) {
+async function askLiquid(prefill) {
+  if (!isMobile()) {
+    const w = await summonChatWindow();
+    if (!w) return;
+    w.input.value = prefill;
+    w.input.focus();
+    w.input.setSelectionRange(prefill.length, prefill.length);
+    return;
+  }
   summonChat();
   $in("input").value = prefill;
   $("input").focus();
@@ -505,12 +513,28 @@ addEventListener("pointerdown", (e) => {
 /* ---------- windows ---------- */
 /** @type {ReturnType<typeof setTimeout> | undefined} */
 let saveTimer;
+let layoutSavePending = false;
 function scheduleLayoutSave() {
+  layoutSavePending = true;
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
+    layoutSavePending = false;
     api("/api/shell", { method:"PUT", body: JSON.stringify(layout) }).catch(() => {});
   }, LAYOUT_SAVE_DEBOUNCE_MS);
 }
+// The debounce must not eat a save when the page goes away — otherwise
+// closing a window right before a reload resurrects it from the stale
+// server layout. keepalive lets the PUT outlive the page.
+addEventListener("pagehide", () => {
+  if (!layoutSavePending) return;
+  layoutSavePending = false;
+  clearTimeout(saveTimer);
+  fetch("/api/shell", {
+    method: "PUT", keepalive: true,
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify(layout),
+  }).catch(() => {});
+});
 
 // PUBLIC apps face untrusted guests, so their iframe runs in an OPAQUE origin
 // (sandbox WITHOUT allow-same-origin) — its JS can't read the shell's origin,
@@ -768,7 +792,18 @@ function tidyWindows() {
 
 /* ---------- command palette (⌘K) ---------- */
 /** @param {string} text */
-function askLiquidSend(text) { summonChat(); $in("input").value = text; /** @type {HTMLFormElement} */ ($("composer")).requestSubmit(); }
+async function askLiquidSend(text) {
+  if (!isMobile()) {
+    const w = await summonChatWindow();
+    if (!w) return;
+    w.input.value = text;
+    /** @type {HTMLFormElement} */ (w.el.querySelector("form")).requestSubmit();
+    return;
+  }
+  summonChat();
+  $in("input").value = text;
+  /** @type {HTMLFormElement} */ ($("composer")).requestSubmit();
+}
 /** @param {string} q @returns {PaletteItem[]} */
 function paletteItems(q) {
   const query = q.toLowerCase().trim();
@@ -1186,6 +1221,24 @@ async function openChatWindow(convId, pos, saved) {
   await setConv(w, convId ?? null);
   bringToFront(win);
   renderDock();
+  return w;
+}
+
+/** The frontmost chat window, if any. */
+function topChatWin() {
+  return [...chatWins.values()].sort(
+    (a, b) => (parseInt(b.el.style.zIndex) || 0) - (parseInt(a.el.style.zIndex) || 0)
+  )[0];
+}
+
+/** Desktop chat entry point: focus the frontmost chat window or open one on
+ *  the latest conversation. ONE chat implementation — the FAB, the dock, and
+ *  double-click all summon the same full-featured window. (Mobile keeps the
+ *  fullscreen panel.) */
+async function summonChatWindow() {
+  const top = topChatWin();
+  if (top) { restoreWindow(top.el); return top; }
+  return await openChatWindow(conversations[0]?.id ?? null);
 }
 
 /* ---------- mobile app view: keep multiple apps alive, switch between them ----------
@@ -1474,7 +1527,7 @@ new ResizeObserver(() => {
   layout.chat = { x: chat.offsetLeft, y: chat.offsetTop, w: chat.offsetWidth, h: chat.offsetHeight };
   scheduleLayoutSave();
 }).observe($("chat"));
-$("chatfab").onclick = () => summonChat();
+$("chatfab").onclick = () => { isMobile() ? summonChat() : summonChatWindow(); };
 $("home").addEventListener("dblclick", (e) => {
   if (/** @type {Element|null} */(e.target)?.closest(".appicon")) return; // empty desk only
   if (isMobile()) summonChat(e.clientX, e.clientY);
@@ -1715,6 +1768,17 @@ async function fileToAttachment(file) {
 }
 /** @param {File[]} files */
 async function addAttachments(files) {
+  // Desktop: dropped/pasted images land in the frontmost chat window.
+  if (!isMobile()) {
+    const w = await summonChatWindow();
+    if (!w) return;
+    for (const f of files) {
+      if (w.atts.length >= MAX_ATTACH) { toast(`Up to ${MAX_ATTACH} images`); break; }
+      try { const a = await fileToAttachment(f); if (a) w.atts.push(a); } catch {}
+    }
+    renderWinAttachStrip(w);
+    return;
+  }
   for (const f of files) {
     if (pendingAttachments.length >= MAX_ATTACH) { toast(`Up to ${MAX_ATTACH} images`); break; }
     try { const a = await fileToAttachment(f); if (a) pendingAttachments.push(a); } catch {}

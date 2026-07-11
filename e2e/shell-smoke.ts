@@ -70,14 +70,17 @@ try {
   writeFileSync(join(gdir, "app.json"), JSON.stringify({ name: "Guest", icon: "🌐", description: "public", visibility: "public" }));
   writeFileSync(join(gdir, "index.html"), "<!doctype html><h1>guest</h1>");
   git("add -A"); git('commit -q -m "add board + guest"');
-  await page.click("#chatfab");
-  await page.waitForFunction(() => !(document.getElementById("send") as HTMLButtonElement).disabled, { timeout: 12000 });
-  await page.type("#input", "make it"); await page.click("#send");
+  await page.click("#chatfab"); // desktop: summons the (one) chat window
+  await page.waitForSelector(".chatwin", { timeout: 8000 });
+  await page.waitForFunction(() => !(document.querySelector(".chatwin .send") as HTMLButtonElement).disabled, { timeout: 12000 });
+  await page.type(".chatwin .chatcompose input", "make it");
+  await page.$eval(".chatwin .send", (b) => (b as HTMLElement).click());
   // wait for THIS app specifically (a fresh install also seeds the built-in
   // StrongLifts app, so ".appicon" alone isn't enough).
   await page.waitForFunction(() => [...document.querySelectorAll(".appicon")].some((e) => (e as HTMLElement).dataset.id === "board"), { timeout: 20000 });
-  await page.click("#chatclose");
+  await page.$eval(".chatwin .close", (b) => (b as HTMLElement).click());
   check("an app the agent built appears on the home screen", true);
+  await sleep(800); // let the debounced layout save flush before the viewport-emulation reload
 
   // mobile (clean state, before the desktop window tests): a fullscreen app hides
   // the floating chat FAB — it used to overlap the app's own bottom nav — and
@@ -206,35 +209,46 @@ try {
   check("installing from the library lands the app on the home screen, live", true);
   await page.click("#panelclose");
 
-  check("the desktop chat is resizable like a window", (await page.$eval("#chat", (e) => getComputedStyle(e).resize)) === "both");
+  check("chat windows are resizable like windows", (await page.$eval(".chatwin", (e) => getComputedStyle(e).resize)) === "both");
 
-  // Windows, image previews, and the docked chat share one z band: opening a
-  // preview while the chat is up must land it ON TOP of the chat (regression:
-  // previews opened invisibly behind the chat panel), and previews get a dock
-  // entry like any window.
+  // ONE chat implementation: the FAB focuses the same full-featured chat
+  // window that double-click opens (the docked aside is mobile-only now).
   await page.click("#chatfab");
-  await page.waitForFunction(() => document.getElementById("chat")!.classList.contains("open"), { timeout: 5000 });
+  check("the FAB summons the chat WINDOW on desktop (no second chat implementation)",
+    await page.evaluate(() => {
+      const w = document.querySelector(".chatwin") as HTMLElement;
+      return !!w && !document.getElementById("chat")!.classList.contains("open") &&
+        [...document.querySelectorAll(".window")].every((o) =>
+          (parseInt((o as HTMLElement).style.zIndex) || 0) <= (parseInt(w.style.zIndex) || 0));
+    }));
+
+  // Windows, image previews, and chats share one z band: a preview opened
+  // while a chat is focused lands ON TOP (regression: previews opened
+  // invisibly behind the chat), and previews get a dock entry like any window.
   await page.evaluate(() => (window as any).__openImageWindow("/icon.svg", "Test image"));
   await page.waitForSelector(".imgwin", { timeout: 3000 });
-  check("an image preview opens ABOVE the docked chat",
+  check("an image preview opens ABOVE the focused chat",
     await page.evaluate(() => {
       const img = document.querySelector(".imgwin") as HTMLElement;
-      const chat = document.getElementById("chat") as HTMLElement;
-      return parseInt(img.style.zIndex) > parseInt(chat.style.zIndex || getComputedStyle(chat).zIndex);
+      const chat = document.querySelector(".chatwin") as HTMLElement;
+      return parseInt(img.style.zIndex) > parseInt(chat.style.zIndex);
     }));
   check("…and shows up in the dock", await page.$eval("#dock", (d) => [...d.querySelectorAll("button")].some((b) => b.title === "Test image")));
-  // clicking the chat raises it back above the preview — one shared band
-  await page.click("#chat header");
+  // clicking the chat raises it back above the preview — one shared band.
+  // Aim at the chat's bottom-left corner, which the centered preview doesn't cover.
+  {
+    const r = (await (await page.$(".chatwin"))!.boundingBox())!;
+    await page.mouse.click(r.x + 15, r.y + r.height - 15);
+  }
   check("clicking the chat raises it above the preview (shared z band)",
     await page.evaluate(() => {
       const img = document.querySelector(".imgwin") as HTMLElement;
-      const chat = document.getElementById("chat") as HTMLElement;
+      const chat = document.querySelector(".chatwin") as HTMLElement;
       return parseInt(chat.style.zIndex) > parseInt(img.style.zIndex);
     }));
   await page.$eval(".imgwin .close", (b) => (b as HTMLElement).click());
   check("closing the preview removes its dock entry",
     await page.$eval("#dock", (d) => ![...d.querySelectorAll("button")].some((b) => b.title === "Test image")));
-  await page.click("#chatclose"); // leave the chat closed, as the next sections expect
 
   // The chat header doubles as a drag handle; its pointerdown handler must NOT
   // preventDefault on interactive controls — that silently kills the model
@@ -249,23 +263,25 @@ try {
   // new-chat race: send the first message of a fresh chat and switch away
   // IMMEDIATELY. The id now binds at send time (REST create before ws.send), so
   // the reply can't stream into a conversation no surface owns.
-  await page.click("#chatfab");
-  await page.waitForFunction(() => document.getElementById("chat")!.classList.contains("open"), { timeout: 5000 });
-  await page.click("#newchat");
-  await page.type("#input", "race check chat");
-  await page.$eval("#composer", (f) => (f as HTMLFormElement).requestSubmit());
-  await page.click("#convtoggle"); // switch away with zero delay
-  await page.evaluate(() => { const c = [...document.querySelectorAll("#convlist .conv")].find((e) => /make it/.test(e.textContent || "")); (c as HTMLElement).click(); });
-  await page.click("#convtoggle");
-  await page.waitForFunction(() => [...document.querySelectorAll("#convlist .conv")].some((e) => /race check chat/.test(e.textContent || "")), { timeout: 5000 });
-  check("new-chat race: the conversation exists exactly once after switching away",
-    (await page.$$eval("#convlist .conv", (els) => els.filter((e) => /race check chat/.test(e.textContent || "")).length)) === 1);
-  await page.evaluate(() => { const c = [...document.querySelectorAll("#convlist .conv")].find((e) => /race check chat/.test(e.textContent || "")); (c as HTMLElement).click(); });
+  await page.$eval(".chatwin .wnew", (b) => (b as HTMLElement).click()); // fresh chat in the window
+  await page.type(".chatwin .chatcompose input", "race check chat");
+  await page.$eval(".chatwin .chatcompose", (f) => (f as HTMLFormElement).requestSubmit());
+  // switch the window away with zero delay (its ☰ conversation list)
+  await page.$eval(".chatwin .wconv", (b) => (b as HTMLElement).click());
+  await page.evaluate(() => { const c = [...document.querySelectorAll(".chatwin .chatconvlist .conv")].find((e) => /make it/.test(e.textContent || "")); (c as HTMLElement).click(); });
+  await page.waitForFunction(async () => {
+    const token = localStorage.getItem("liquid_token");
+    const r = await fetch("/api/conversations", { headers: { Authorization: `Bearer ${token}` } });
+    const convs = (await r.json()).conversations ?? [];
+    return convs.filter((c: any) => /race check chat/.test(c.title || "")).length === 1;
+  }, { timeout: 8000 });
+  check("new-chat race: the conversation exists exactly once after switching away", true);
+  await page.$eval(".chatwin .wconv", (b) => (b as HTMLElement).click());
+  await page.evaluate(() => { const c = [...document.querySelectorAll(".chatwin .chatconvlist .conv")].find((e) => /race check chat/.test(e.textContent || "")); (c as HTMLElement).click(); });
   await page.waitForFunction(() =>
-    [...document.querySelectorAll("#log .msg.user")].some((u) => /race check chat/.test(u.textContent || "")) &&
-    [...document.querySelectorAll("#log .msg.bot")].some((b) => /You said/.test(b.textContent || "")), { timeout: 15000 });
+    [...document.querySelectorAll(".chatwin .msg.user")].some((u) => /race check chat/.test(u.textContent || "")) &&
+    [...document.querySelectorAll(".chatwin .msg.bot")].some((b) => /You said/.test(b.textContent || "")), { timeout: 15000 });
   check("new-chat race: switching back shows the message and the reply — nothing lost", true);
-  await page.click("#chatclose");
 
   check("no page errors", errs.length === 0);
   if (errs.length) console.log("  errors:", errs.slice(0, 4));

@@ -35,25 +35,25 @@ try {
   await page.waitForFunction(() => document.getElementById("shell")!.classList.contains("active"), { timeout: 20000 });
   const token = await page.evaluate(() => localStorage.getItem("liquid_token"));
 
-  await page.click("#chatfab");
-  await page.waitForFunction(() => document.getElementById("chat")!.classList.contains("open"), { timeout: 5000 });
+  await page.click("#chatfab"); // desktop: summons the (one) chat window
+  await page.waitForSelector(".chatwin", { timeout: 5000 });
 
   // paste a synthetic PNG into the composer
   await page.evaluate((b64) => {
     const bin = atob(b64); const arr = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
     const file = new File([arr], "shot.png", { type: "image/png" });
     const dt = new DataTransfer(); dt.items.add(file);
-    document.getElementById("input")!.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+    document.querySelector(".chatwin .chatcompose input")!.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
   }, PNG);
-  await page.waitForFunction(() => document.querySelectorAll("#attachstrip .athumb").length === 1, { timeout: 4000 });
+  await page.waitForFunction(() => document.querySelectorAll(".chatwin .attachstrip .athumb").length === 1, { timeout: 4000 });
   ok("pasting an image shows a thumbnail in the composer strip", true);
 
   // send it
-  await page.type("#input", "what's wrong here?");
-  await page.$eval("#composer", (f) => (f as HTMLFormElement).requestSubmit());
-  await page.waitForFunction(() => !!document.querySelector("#log .msg.user .athumbs img"), { timeout: 5000 });
+  await page.type(".chatwin .chatcompose input", "what's wrong here?");
+  await page.$eval(".chatwin .chatcompose", (f) => (f as HTMLFormElement).requestSubmit());
+  await page.waitForFunction(() => !!document.querySelector(".chatwin .chatlog .msg.user .athumbs img"), { timeout: 5000 });
   ok("the sent user message shows the image thumbnail", true);
-  ok("the composer strip clears after sending", (await page.$$("#attachstrip .athumb")).length === 0);
+  ok("the composer strip clears after sending", (await page.$$(".chatwin .attachstrip .athumb")).length === 0);
 
   await sleep(800); // let it persist + the fake reply land
   const auth = { Authorization: "Bearer " + token };
@@ -73,24 +73,24 @@ try {
   // survives reload (rendered from /api/attachments)
   await page.reload({ waitUntil: "networkidle0" });
   await page.waitForFunction(() => document.getElementById("shell")!.classList.contains("active"), { timeout: 20000 });
-  await page.click("#chatfab");
-  await page.waitForFunction(() => !!document.querySelector("#log .msg.user .athumbs img"), { timeout: 6000 }).catch(() => {});
-  ok("the image still renders after a reload", await page.$eval("#log", (l) => !!l.querySelector(".msg.user .athumbs img")));
+  await page.click("#chatfab"); // focuses the restored window (or opens one on the latest conversation)
+  await page.waitForFunction(() => !!document.querySelector(".chatwin .chatlog .msg.user .athumbs img"), { timeout: 8000 }).catch(() => {});
+  ok("the image still renders after a reload", await page.$eval(".chatwin .chatlog", (l) => !!l.querySelector(".msg.user .athumbs img")));
 
   // the OTHER direction: the agent pushes an image into your chat MID-REPLY
   // (streams preamble → screenshot tool → streams the rest). The stream must
   // split around the image with no duplicated text, live and after reload.
-  await page.type("#input", "take a screenshot and show me");
-  await page.$eval("#composer", (f) => (f as HTMLFormElement).requestSubmit());
-  await page.waitForFunction(() => document.querySelectorAll("#log .msg.bot .athumbs img").length >= 1, { timeout: 10000 });
+  await page.type(".chatwin .chatcompose input", "take a screenshot and show me");
+  await page.$eval(".chatwin .chatcompose", (f) => (f as HTMLFormElement).requestSubmit());
+  await page.waitForFunction(() => document.querySelectorAll(".chatwin .chatlog .msg.bot .athumbs img").length >= 1, { timeout: 10000 });
   ok("the agent can push an image into your chat", true);
   // wait for the reply to FINISH (done hides the stop button), not just begin —
   // asserting or reloading mid-stream would race the tail of the reply.
   await page.waitForFunction(() => {
-    const last = [...document.querySelectorAll("#log .msg.bot")].at(-1)?.textContent || "";
-    return /You said/.test(last) && (document.getElementById("stopbtn") as HTMLElement).hidden;
+    const last = [...document.querySelectorAll(".chatwin .chatlog .msg.bot")].at(-1)?.textContent || "";
+    return /You said/.test(last) && (document.querySelector(".chatwin .stop") as HTMLElement).hidden;
   }, { timeout: 15000 });
-  const order = () => page.$$eval("#log .msg.bot", (els) => els.slice(-3).map((e) => {
+  const order = () => page.$$eval(".chatwin .chatlog .msg.bot", (els) => els.slice(-3).map((e) => {
     if (e.querySelector(".athumbs img")) return "image";
     const t = e.textContent || "";
     return /Here is the screenshot/.test(t) && !/You said/.test(t) ? "pre"
@@ -100,7 +100,7 @@ try {
     JSON.stringify(await order()) === JSON.stringify(["pre", "image", "post"]));
 
   // clicking the image opens a real desk window (shared WM: drag/snap/resize)
-  await page.click("#log .msg.bot .athumbs img");
+  await page.click(".chatwin .chatlog .msg.bot .athumbs img");
   await page.waitForSelector(".imgwin", { timeout: 4000 });
   ok("clicking opens the image in a desk window (resizable)",
     await page.$eval(".imgwin", (e) => e.classList.contains("window") && getComputedStyle(e).resize === "both" && !!e.querySelector(".imgwrap img")));
@@ -119,7 +119,7 @@ try {
   await page.reload({ waitUntil: "networkidle0" });
   await page.waitForFunction(() => document.getElementById("shell")!.classList.contains("active"), { timeout: 20000 });
   await page.click("#chatfab");
-  await page.waitForFunction(() => !!document.querySelector("#log .msg.bot .athumbs img"), { timeout: 6000 }).catch(() => {});
+  await page.waitForFunction(() => !!document.querySelector(".chatwin .chatlog .msg.bot .athumbs img"), { timeout: 8000 }).catch(() => {});
   ok("after a reload the split order is preserved", JSON.stringify(await order()) === JSON.stringify(["pre", "image", "post"]));
 
   ok("no page errors", errs.length === 0); if (errs.length) console.log("  errors:", errs.slice(0, 4));

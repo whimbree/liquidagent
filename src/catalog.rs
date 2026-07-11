@@ -18,7 +18,7 @@
 //! - "replace" overwrites with the pristine library copy — git history
 //!   still keeps what you had.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::Context;
 use axum::extract::{Path as UrlPath, State};
@@ -541,6 +541,7 @@ fn git_stdout(dir: &Path, args: &[&str]) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn the_library_ships_stronglifts_and_whiteboard() {
