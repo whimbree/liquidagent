@@ -447,16 +447,27 @@ async fn record_agent_events(state: AppState) {
     }
 }
 
+/// The platform commit this binary was built from. Injected by the nix build
+/// (`LIQUID_BUILD_REV` = the flake's self.rev); "dev" under plain `cargo run`.
+const BUILD_REV: &str = match option_env!("LIQUID_BUILD_REV") {
+    Some(rev) => rev,
+    None => "dev",
+};
+
 /// Health + a snapshot of platform state, handy for debugging a deploy.
 async fn health(axum::extract::State(state): axum::extract::State<AppState>) -> Json<serde_json::Value> {
     let deployed = state.deploy.deployed_commit().unwrap_or_default();
     let app_count = state.apps_cache.lock().expect("apps cache poisoned").len();
+    // "owner/repo" on GitHub, set by the NixOS module from its update flake —
+    // lets the shell link the running commit and check for a newer one.
+    let source_repo = std::env::var("LIQUID_SOURCE_REPO").ok();
     Json(serde_json::json!({
         "status": "ok",
         "pipeline_mode": state.deploy.mode(),
         "pipeline_status": state.deploy.status(),
         "deployed_commit": deployed,
         "app_count": app_count,
+        "build": { "rev": BUILD_REV, "repo": source_repo },
     }))
 }
 

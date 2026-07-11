@@ -167,6 +167,13 @@ try {
   check("the command palette opens and finds the app", true);
   await page.keyboard.press("Escape");
 
+  // settings → System shows the running platform commit ("dev" under cargo
+  // run; a sha + GitHub link + up-to-date check on a nix-built deploy)
+  await page.click("#settingsbtn");
+  await page.waitForFunction(() => /Running commit/.test(document.getElementById("sys-build")?.textContent || ""), { timeout: 5000 });
+  check("settings shows the running platform build", true);
+  await page.click("#panelclose");
+
   check("the desktop chat is resizable like a window", (await page.$eval("#chat", (e) => getComputedStyle(e).resize)) === "both");
 
   // The chat header doubles as a drag handle; its pointerdown handler must NOT

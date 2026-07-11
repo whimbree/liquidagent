@@ -83,6 +83,12 @@ const server = spawn("cargo", ["run", "--quiet"], {
 try {
   await until("supervisor up", async () => (await fetch(BASE + "/api/health")).ok, 90000);
 
+  // --- health reports the platform build (dev under cargo run) ---
+  {
+    const h = await (await fetch(BASE + "/api/health")).json();
+    check("health reports the platform build rev", typeof h?.build?.rev === "string" && h.build.rev.length > 0);
+  }
+
   // --- auth ---
   console.log("auth");
   check("unauthenticated request rejected", (await j("/api/conversations")).status === 401);

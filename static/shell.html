@@ -405,6 +405,10 @@
   .setting-section .msg { font-size:0.82rem; min-height:1.1em; }
   .setting-section .msg.ok { color:#8fd0a0; }
   .setting-section .msg.err { color:#f0a0a0; }
+  #sys-build a { color:#c9c9d4; }
+  #sys-build .sys-rev { font-family:ui-monospace, monospace; }
+  #sys-build .sys-badge.ok { color:#8fd0a0; }
+  #sys-build .sys-badge.warn a { color:#ffd93d; }
   .setting-section label.hint { display:block; margin:0.6rem 0 0.2rem; }
   .swatches { display:flex; gap:0.5rem; margin-top:0.6rem; }
   .swatches button { width:1.7rem; height:1.7rem; border-radius:50%; border:2px solid transparent; padding:0; }
@@ -536,6 +540,11 @@
           <button type="submit">Change password</button>
           <div class="msg" id="pw-msg"></div>
         </form>
+      </div>
+      <div class="setting-section">
+        <h3>System</h3>
+        <p class="hint">The platform build this liquid is running.</p>
+        <div id="sys-build" class="hint">…</div>
       </div>
     </div>
   </div>

@@ -18,6 +18,10 @@ let
   selfDir = "${cfg.dataDir}/self-update";
   liquidExe = if au.enable then "${selfDir}/liquid/bin/liquid" else lib.getExe packages.liquid;
   agentBase = if au.enable then "${selfDir}/agent" else "${packages.liquid-agent}";
+  # "owner/repo" when the update flake points at GitHub — the shell uses it to
+  # link the running commit and check whether a newer one exists.
+  sourceRepoMatch = builtins.match "github:([^/]+/[^/]+).*" au.flake;
+  sourceRepo = if sourceRepoMatch != null then builtins.head sourceRepoMatch else null;
 in
 {
   options.services.liquidagent = {
@@ -192,6 +196,8 @@ in
       } // lib.optionalAttrs (cfg.chromiumPackage != null) {
         # Enables the agent's screenshot tool (headless chromium capture).
         LIQUID_CHROME = "${cfg.chromiumPackage}/bin/chromium";
+      } // lib.optionalAttrs (sourceRepo != null) {
+        LIQUID_SOURCE_REPO = sourceRepo;
       };
 
       serviceConfig = {

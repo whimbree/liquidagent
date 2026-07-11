@@ -49,6 +49,11 @@
           version = "0.1.0";
           src = cleanedSource ./.;
           cargoLock.lockFile = ./Cargo.lock;
+          # Embed the commit this build came from (shown in the shell's System
+          # panel, with an is-latest check). Makes every commit a distinct
+          # derivation — which is exactly what the self-updater's "restart on
+          # change" semantics want.
+          env.LIQUID_BUILD_REV = self.rev or self.dirtyRev or "unknown";
           # The deploy-pipeline tests shell out to git (worktree, commit, diff);
           # git must be on PATH during the check phase, and HOME writable so
           # git doesn't reject a missing config dir.

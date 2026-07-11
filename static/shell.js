@@ -1782,10 +1782,66 @@ $("wallpaper-select").onchange = () => setAppearance({ wallpaper: $in("wallpaper
 async function loadSettings() {
   const m = $("model-msg"); m.textContent = ""; m.className = "msg";
   initAppearanceControls();
+  loadBuildInfo();
   try {
     const s = await (await api("/api/settings")).json();
     $in("model-select").value = s.model || "default";
   } catch {}
+}
+
+/** System panel: the platform commit this build runs, linked to GitHub, with
+ *  an is-latest check against the repo's HEAD (best-effort — offline or
+ *  rate-limited just means no verdict, never an error). */
+async function loadBuildInfo() {
+  const el = $("sys-build");
+  el.textContent = "";
+  try {
+    const h = await (await fetch("/api/health")).json();
+    const raw = typeof h.build?.rev === "string" ? h.build.rev : "unknown";
+    const repo = typeof h.build?.repo === "string" ? h.build.repo : null;
+    // Nix injects "<sha>" for clean builds, "<sha>-dirty" for local ones.
+    const m = raw.match(/^([0-9a-f]{7,40})(-dirty)?$/);
+    const rev = m ? /** @type {string} */ (m[1]) : raw;
+    const isSha = !!m && !m[2]; // a dirty build isn't any published commit — don't link/compare
+    const short = m ? rev.slice(0, 7) + (m[2] ? " (dirty)" : "") : raw;
+    el.append("Running commit ");
+    if (isSha && repo) {
+      const a = document.createElement("a");
+      a.className = "sys-rev";
+      a.href = `https://github.com/${repo}/commit/${rev}`;
+      a.target = "_blank"; a.rel = "noreferrer";
+      a.textContent = short;
+      el.append(a);
+    } else {
+      const s = document.createElement("span");
+      s.className = "sys-rev";
+      s.textContent = short;
+      el.append(s);
+    }
+    const badge = document.createElement("span");
+    badge.className = "sys-badge";
+    el.append(" — ", badge);
+    if (!isSha || !repo) { badge.textContent = "development build"; return; }
+    badge.textContent = "checking for updates…";
+    try {
+      const r = await fetch(`https://api.github.com/repos/${repo}/commits?per_page=1`);
+      if (!r.ok) throw new Error(String(r.status));
+      const latest = (await r.json())?.[0]?.sha;
+      if (typeof latest !== "string") throw new Error("no sha");
+      if (latest.startsWith(rev) || rev.startsWith(latest)) {
+        badge.classList.add("ok");
+        badge.textContent = "✓ up to date";
+      } else {
+        badge.classList.add("warn");
+        badge.textContent = "";
+        const cmp = document.createElement("a");
+        cmp.href = `https://github.com/${repo}/compare/${rev.slice(0, 12)}...${latest.slice(0, 12)}`;
+        cmp.target = "_blank"; cmp.rel = "noreferrer";
+        cmp.textContent = `⬆ update available (latest ${latest.slice(0, 7)})`;
+        badge.append(cmp);
+      }
+    } catch { badge.textContent = "couldn't check for updates"; }
+  } catch { el.textContent = "version unavailable"; }
 }
 $("model-select").onchange = async () => {
   const m = $("model-msg"); m.className = "msg"; m.textContent = "Saving…";
