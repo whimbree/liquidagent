@@ -666,8 +666,18 @@ function restoreWindow(win) { win.classList.remove("minimized"); bringToFront(wi
 /** @param {HTMLElement} win */
 function toggleMaximize(win) { win.classList.toggle("maximized"); persistWin(win); }
 
-/** @param {HTMLElement} win */
+/** Windows, image previews, and the docked chat share ONE z band (10..40),
+ *  below the dock (45), FAB (60), and all fixed overlays — whatever you
+ *  clicked last is on top, no surface is special. When focus cycling
+ *  exhausts the band, renumber everything preserving order.
+ *  @param {HTMLElement} win */
 function bringToFront(win) {
+  if (zCounter >= 40) {
+    const stack = /** @type {HTMLElement[]} */ ([...document.querySelectorAll(".window"), $("chat")])
+      .sort((a, b) => (parseInt(a.style.zIndex) || 0) - (parseInt(b.style.zIndex) || 0));
+    zCounter = 10;
+    for (const el of stack) el.style.zIndex = String(++zCounter);
+  }
   win.style.zIndex = String(++zCounter);
   document.querySelectorAll(".window").forEach(w => w.classList.toggle("focused", w === win));
 }
@@ -687,7 +697,8 @@ function renderDock() {
     if (app) add(win, app.icon, app.name);
   }
   for (const w of chatWins.values()) add(w.el, "💬", w.title.textContent || "Chat");
-  dock.classList.toggle("visible", openWindows.size + chatWins.size > 0);
+  for (const win of imgWins) add(win, "🖼", win.dataset.label || "Image");
+  dock.classList.toggle("visible", openWindows.size + chatWins.size + imgWins.size > 0);
 }
 
 /* ---------- window switcher / tiling / tidy ---------- */
@@ -696,6 +707,7 @@ function allWindows() {
   const list = [];
   for (const [id, win] of openWindows) { const app = apps.find(a => a.id === id); if (app) list.push({ el: win, icon: app.icon, label: app.name }); }
   for (const w of chatWins.values()) list.push({ el: w.el, icon: "💬", label: w.title.textContent || "Chat" });
+  for (const win of imgWins) list.push({ el: win, icon: "🖼", label: win.dataset.label || "Image" });
   return list.sort((a, b) => (parseInt(b.el.style.zIndex) || 0) - (parseInt(a.el.style.zIndex) || 0));
 }
 /** @type {{items:SwitcherItem[],sel:number}|null} */
@@ -1342,6 +1354,7 @@ $("scrolldown").onclick = () => { $("log").scrollTop = $("log").scrollHeight; sy
 function summonChat(x, y) {
   const chat = $("chat");
   chat.classList.add("open");
+  bringToFront(chat);
   document.body.classList.add("chat-open");
   if (activeConversation !== null) { unread.delete(activeConversation); updateUnreadUi(); renderConvList(); }
   if (!isMobile()) {
@@ -1407,6 +1420,8 @@ addEventListener("keydown", (e) => {
 });
 addEventListener("keyup", (e) => { if (switcher && !e.ctrlKey) commitSwitcher(); });
 
+// clicking anywhere in the docked chat raises it, like any window
+$("chat").addEventListener("pointerdown", () => { if (!isMobile()) bringToFront($("chat")); });
 // drag the chat panel by its header (desktop)
 /** @type {HTMLElement} */ ($("chat").querySelector("header")).addEventListener("pointerdown", (e) => {
   // Interactive controls in the header (buttons, the model <select>) must keep
@@ -1644,13 +1659,16 @@ function attachmentThumbs(items) {
   }
   return wrap;
 }
+/** Open image-preview windows, so the dock and switcher can list them. */
+const imgWins = new Set();
 /** Preview an image in a real desk window — the same .window/WM machinery as
  *  apps and chats (drag, edge snaps, dblclick-maximize, focus/z-order, CSS
- *  resize), not a bespoke overlay. Ephemeral: not in the dock or saved layout.
+ *  resize, the dock), not a bespoke overlay. Not in the saved layout.
  *  @param {string} src @param {string} [name] */
 function openImageWindow(src, name) {
   const win = document.createElement("div");
   win.className = "window imgwin";
+  win.dataset.label = name || "Image";
   const w = Math.min(560, innerWidth - 32), h = Math.min(460, innerHeight - 32);
   win.style.width = w + "px"; win.style.height = h + "px";
   win.style.left = Math.max(8, (innerWidth - w) / 2) + "px";
@@ -1663,13 +1681,17 @@ function openImageWindow(src, name) {
   /** @type {HTMLElement} */ (win.querySelector(".tname")).textContent = name || "Image";
   /** @type {HTMLImageElement} */ (win.querySelector(".imgwrap img")).src = src;
   /** @type {HTMLElement} */ (win.querySelector(".full")).onclick = () => window.open(src, "_blank");
-  /** @type {HTMLElement} */ (win.querySelector(".close")).onclick = () => win.remove();
+  /** @type {HTMLElement} */ (win.querySelector(".close")).onclick = () => { win.remove(); imgWins.delete(win); renderDock(); };
   win.addEventListener("pointerdown", () => bringToFront(win));
   document.body.append(win);
   enableWinDrag(win);
+  imgWins.add(win);
   bringToFront(win);
+  renderDock();
   return win;
 }
+// test hook: shell-smoke drives the preview window without a chat attachment
+/** @type {any} */ (window).__openImageWindow = openImageWindow;
 $("attachbtn").onclick = () => $in("attachinput").click();
 $("attachinput").addEventListener("change", () => { const f = $in("attachinput").files; if (f) addAttachments([...f]); $in("attachinput").value = ""; });
 $("input").addEventListener("paste", (e) => {
@@ -1790,7 +1812,7 @@ async function loadSettings() {
   } catch {}
 }
 
-/** @typedef {{id:string,name:string,icon:string,description:string,runtime?:string,runtime_available:boolean,installed:boolean,update_available:boolean,local_changes:boolean}} CatalogEntry */
+/** @typedef {{id:string,name:string,icon:string,description:string,runtime?:string,runtime_available:boolean,installed:boolean,live:boolean,update_available:boolean,local_changes:boolean}} CatalogEntry */
 
 /** The built-in app library: install any time; updates are git merges of the
  *  new library version onto your evolved copy (or a clean replace). */
@@ -1839,6 +1861,14 @@ async function loadCatalog() {
           actions.append(st);
         }
         actions.append(b);
+      } else if (!app.live) {
+        // In the workspace but NOT in the served worktree: the install/update
+        // committed but never deployed. Surface it — this otherwise reads as
+        // a lying "Installed ✓" next to a 404 — and offer the recovery.
+        const st = document.createElement("span"); st.className = "cat-desc"; st.textContent = "installed but not live ⚠";
+        actions.append(st);
+        actions.append(action("Replace", () =>
+          api(`/api/catalog/${app.id}/update`, { method: "POST", body: JSON.stringify({ mode: "replace" }) })));
       } else if (app.update_available) {
         const st = document.createElement("span"); st.className = "cat-desc"; st.textContent = "update available";
         actions.append(st);

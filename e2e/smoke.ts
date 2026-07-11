@@ -156,8 +156,8 @@ try {
   {
     const cat = async () => ((await j("/api/catalog", {}, token)).body?.apps ?? []) as any[];
     const apps = await cat();
-    check("the library lists seeded stronglifts as installed & current",
-      apps.some((a) => a.id === "stronglifts" && a.installed && !a.update_available && !a.local_changes));
+    check("the library lists seeded stronglifts as installed, LIVE & current",
+      apps.some((a) => a.id === "stronglifts" && a.installed && a.live && !a.update_available && !a.local_changes));
     check("the library lists the whiteboard (mix runtime), uninstalled",
       apps.some((a) => a.id === "whiteboard" && !a.installed && a.runtime === "mix" && a.surface === "full"));
     check("reinstalling an installed app is refused (409)",
@@ -323,6 +323,11 @@ try {
   commitApp("shared", "", "public");
   await nudge(token);
   await until("public app served", async () => (await app("/app/shared/")).status === 200);
+  // Humans share the bare /app/<id> form — it must land on the app, not 404.
+  const bare = await fetch(`${BASE}/app/shared?x=1`, { redirect: "manual" });
+  check("/app/<id> without a slash redirects to the canonical URL (query kept)",
+    bare.status === 308 && bare.headers.get("location") === "/app/shared/?x=1");
+  check("…and following it reaches the app", (await fetch(`${BASE}/app/shared`)).status === 200);
   const lan = Object.values(networkInterfaces()).flat().find((i) => i && !i.internal && i.family === "IPv4")?.address;
   if (lan) {
     const R = `http://${lan}:${PORT}`;

@@ -301,6 +301,7 @@ async fn main() -> anyhow::Result<()> {
         )
         // any(): full-surface apps take every method (and WS upgrades) on
         // their whole namespace; panel apps enforce GET/HEAD in the handler.
+        .route("/app/{app}", axum::routing::any(apps::redirect_app_root))
         .route("/app/{app}/", axum::routing::any(apps::serve_app_index))
         .route("/app/{app}/{*path}", axum::routing::any(apps::serve_app_file))
         .merge(protected)

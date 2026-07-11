@@ -55,6 +55,11 @@ pub struct CatalogEntry {
     /// Whether that runtime is on the supervisor's PATH right now.
     pub runtime_available: bool,
     pub installed: bool,
+    /// Installed AND present in the deployed worktree — i.e. actually being
+    /// served. False with installed=true means the install/update committed
+    /// (or extracted) but never deployed: exactly the state that otherwise
+    /// reads as a lying "Installed ✓" next to a 404.
+    pub live: bool,
     /// The library ships newer content than what was installed (or the
     /// baseline is unknown — pre-marker installs — and we can't rule it out).
     pub update_available: bool,
@@ -148,7 +153,7 @@ fn has_local_changes(workspace_dir: &Path, id: &str, base: &str) -> bool {
     committed || dirty
 }
 
-fn entries(workspace_dir: &Path) -> Vec<CatalogEntry> {
+fn entries(workspace_dir: &Path, served_dir: &Path) -> Vec<CatalogEntry> {
     let mut list: Vec<CatalogEntry> = CATALOG
         .dirs()
         .filter_map(|dir| {
@@ -160,6 +165,7 @@ fn entries(workspace_dir: &Path) -> Vec<CatalogEntry> {
             let backend = embedded_backend(dir, raw.backend);
             let runtime = backend.and_then(|spec| spec.run.into_iter().next());
             let installed = workspace_dir.join("apps").join(&id).exists();
+            let live = installed && served_dir.join("apps").join(&id).join(apps::MANIFEST_FILE).exists();
             let (update_available, local_changes) = if installed {
                 // Baseline unknown (pre-marker install) counts as updatable —
                 // we can't rule an upstream change out, and merge still works
@@ -176,6 +182,7 @@ fn entries(workspace_dir: &Path) -> Vec<CatalogEntry> {
             };
             Some(CatalogEntry {
                 installed,
+                live,
                 update_available,
                 local_changes,
                 name: raw.name,
@@ -312,7 +319,7 @@ fn merge_update(
 
 /// GET /api/catalog — the built-in library with install/update state.
 pub async fn list(State(state): State<AppState>) -> Json<serde_json::Value> {
-    Json(json!({ "apps": entries(&state.workspace_dir) }))
+    Json(json!({ "apps": entries(&state.workspace_dir, &state.served_dir) }))
 }
 
 /// Shared preconditions for install/update: the target must be a library app
@@ -345,13 +352,19 @@ fn commit_and_deploy(state: &AppState, app: &str, message: &str) -> Response {
     });
     if let Err(err) = committed {
         warn!("catalog {app}: commit failed: {err:#}");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("files extracted but the commit failed: {err:#}") })),
+        )
+            .into_response();
     }
     deploy_head(state, app)
 }
 
 /// The bytes are platform-shipped and the human asked, so library commits are
 /// pre-approved: deploy directly rather than riding the agent review gate.
+/// VERIFIES the app actually landed in the served worktree — a success answer
+/// must mean "it is being served", never "the commit probably worked".
 fn deploy_head(state: &AppState, app: &str) -> Response {
     let deployed = state
         .deploy
@@ -360,12 +373,27 @@ fn deploy_head(state: &AppState, app: &str) -> Response {
     match deployed {
         Ok(head) => {
             crate::refresh_served_apps_pub(state);
+            if !state.served_dir.join("apps").join(app).join(apps::MANIFEST_FILE).exists() {
+                warn!("catalog {app}: deployed {head} but the app is missing from the served worktree");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "error": "committed, but the app did not land in the served worktree — check the supervisor log (was everything gitignored?)",
+                        "commit": head,
+                    })),
+                )
+                    .into_response();
+            }
             info!("library: deployed {app} at {head}");
             (StatusCode::OK, Json(json!({ "app": app, "commit": head }))).into_response()
         }
         Err(err) => {
             warn!("catalog {app}: deploy failed: {err:#}");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": format!("committed but not deployed: {err:#}") })),
+            )
+                .into_response()
         }
     }
 }
@@ -485,12 +513,18 @@ pub async fn update(
 // --- git plumbing ----------------------------------------------------------------
 
 fn git(dir: &Path, args: &[&str]) -> anyhow::Result<()> {
-    let status = std::process::Command::new("git")
+    let out = std::process::Command::new("git")
         .args(args)
         .current_dir(dir)
-        .status()
+        .output()
         .context("running git")?;
-    anyhow::ensure!(status.success(), "git {args:?} exited with {status}");
+    // Carry stderr into the error: these surface in the shell UI, where
+    // "git exited with 1" is useless and "nothing to commit" is the answer.
+    anyhow::ensure!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
     Ok(())
 }
 
@@ -513,8 +547,9 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("liquid-catalog-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(tmp.join("apps")).unwrap();
+        let served = tmp.join("served");
 
-        let list = entries(&tmp);
+        let list = entries(&tmp, &served);
         let ids: Vec<&str> = list.iter().map(|e| e.id.as_str()).collect();
         assert!(ids.contains(&"stronglifts"), "stronglifts in library, got {ids:?}");
         assert!(ids.contains(&"whiteboard"), "whiteboard in library, got {ids:?}");
@@ -540,6 +575,10 @@ mod tests {
         assert!(tmp.join("apps/whiteboard/priv/static/index.html").exists());
         assert!(tmp.join("apps/whiteboard").join(MARKER_FILE).exists());
         assert!(apps::scan_apps(&tmp).iter().any(|a| a.id == "whiteboard"));
+        // extracted into the workspace but NOT deployed → installed, not live
+        let after = entries(&tmp, &served);
+        let wb_after = after.iter().find(|e| e.id == "whiteboard").unwrap();
+        assert!(wb_after.installed && !wb_after.live);
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }

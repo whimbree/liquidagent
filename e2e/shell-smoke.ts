@@ -187,6 +187,34 @@ try {
 
   check("the desktop chat is resizable like a window", (await page.$eval("#chat", (e) => getComputedStyle(e).resize)) === "both");
 
+  // Windows, image previews, and the docked chat share one z band: opening a
+  // preview while the chat is up must land it ON TOP of the chat (regression:
+  // previews opened invisibly behind the chat panel), and previews get a dock
+  // entry like any window.
+  await page.click("#chatfab");
+  await page.waitForFunction(() => document.getElementById("chat")!.classList.contains("open"), { timeout: 5000 });
+  await page.evaluate(() => (window as any).__openImageWindow("/icon.svg", "Test image"));
+  await page.waitForSelector(".imgwin", { timeout: 3000 });
+  check("an image preview opens ABOVE the docked chat",
+    await page.evaluate(() => {
+      const img = document.querySelector(".imgwin") as HTMLElement;
+      const chat = document.getElementById("chat") as HTMLElement;
+      return parseInt(img.style.zIndex) > parseInt(chat.style.zIndex || getComputedStyle(chat).zIndex);
+    }));
+  check("…and shows up in the dock", await page.$eval("#dock", (d) => [...d.querySelectorAll("button")].some((b) => b.title === "Test image")));
+  // clicking the chat raises it back above the preview — one shared band
+  await page.click("#chat header");
+  check("clicking the chat raises it above the preview (shared z band)",
+    await page.evaluate(() => {
+      const img = document.querySelector(".imgwin") as HTMLElement;
+      const chat = document.getElementById("chat") as HTMLElement;
+      return parseInt(chat.style.zIndex) > parseInt(img.style.zIndex);
+    }));
+  await page.$eval(".imgwin .close", (b) => (b as HTMLElement).click());
+  check("closing the preview removes its dock entry",
+    await page.$eval("#dock", (d) => ![...d.querySelectorAll("button")].some((b) => b.title === "Test image")));
+  await page.click("#chatclose"); // leave the chat closed, as the next sections expect
+
   // The chat header doubles as a drag handle; its pointerdown handler must NOT
   // preventDefault on interactive controls — that silently kills the model
   // <select>'s native dropdown (regression: "can't click the model selector").

@@ -346,6 +346,27 @@ pub fn enriched_apps(state: &AppState) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// /app/{app} (no trailing slash) — redirect to the canonical /app/{app}/.
+/// Humans share the bare form; without this it's a bewildering 404.
+pub async fn redirect_app_root(
+    UrlPath(app): UrlPath<String>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    if !is_safe_app_id(&app) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let query = query.map(|q| format!("?{q}")).unwrap_or_default();
+    let target = format!("/app/{app}/{query}");
+    match header::HeaderValue::from_str(&target) {
+        Ok(location) => {
+            let mut resp = StatusCode::PERMANENT_REDIRECT.into_response();
+            resp.headers_mut().insert(header::LOCATION, location);
+            resp
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 /// /app/{app}/{*path} — the app's surface. Panel apps (the default) are
 /// static files from the app's directory, GET/HEAD only, traversal-safe (app
 /// id is charset-checked, every path component must be a plain name). Full-
