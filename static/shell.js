@@ -393,7 +393,17 @@ $("fv-name").onchange = () => {
 $("fv-close").onclick = closeFolder;
 $("folder-view").onclick = (e) => { if (e.target === $("folder-view")) closeFolder(); };
 
-/* ---- app context menu: lifecycle actions are conversations ---- */
+/* ---- app context menu: deterministic edits are direct; judgment goes to liquid ---- */
+
+/** One-field manifest edit → a commit → a deploy; the grid updates via
+ *  apps_changed. @param {string} id @param {object} patch */
+async function patchApp(id, patch) {
+  try {
+    const r = await api(`/api/apps/${encodeURIComponent(id)}/manifest`, { method: "PATCH", body: JSON.stringify(patch) });
+    if (!r.ok) toast((await r.json().catch(() => ({})))?.error || "Change failed");
+  } catch { toast("Change failed"); }
+}
+
 /** @param {string} prefill */
 async function askLiquid(prefill) {
   if (!isMobile()) {
@@ -417,8 +427,30 @@ function showAppMenu(app, x, y) {
   const items = [
     ["Open", () => openApp(app.id, true)],
     null,
-    ["Rename…", () => askLiquid(`Rename the ${app.name} app to: `)],
-    ["Change icon…", () => askLiquid(`Change the ${app.name} app's icon to: `)],
+    // Deterministic one-field edits are DIRECT (a form → a commit), not LLM
+    // conversations; the agent is for work that needs judgment ("Improve…").
+    ["Rename…", async () => {
+      const name = prompt(`Rename ${app.name} to:`, app.name);
+      if (name && name.trim() && name !== app.name) await patchApp(app.id, { name: name.trim() });
+    }],
+    ["Change icon…", async () => {
+      const icon = prompt(`New icon for ${app.name} (an emoji):`, app.icon);
+      if (icon && icon.trim() && icon !== app.icon) await patchApp(app.id, { icon: icon.trim() });
+    }],
+    app.visibility === "public"
+      ? ["Copy share link", async () => {
+          const link = `${location.origin}/app/${encodeURIComponent(app.id)}/`;
+          try { await navigator.clipboard.writeText(link); toast("Share link copied — anyone with it can open the app"); }
+          catch { prompt("Share link (anyone with it can open the app):", link); }
+        }]
+      : ["Share publicly…", async () => {
+          if (!confirm(`Make ${app.name} PUBLIC? Anyone with the link can open it — no liquid login.`)) return;
+          await patchApp(app.id, { visibility: "public" });
+          toast(`${app.name} is public — “Copy share link” is now in its menu`);
+        }],
+    ...(app.visibility === "public"
+      ? [/** @type {[string, () => void]} */ (["Make private", () => patchApp(app.id, { visibility: "private" })])]
+      : []),
     ["Improve…", () => askLiquid(`Improve the ${app.name} app: `)],
     ["What changed?", async () => {
       const data = await (await api(`/api/apps/${encodeURIComponent(app.id)}/log`)).json();
@@ -438,9 +470,14 @@ function showAppMenu(app, x, y) {
       } catch { toast("Publish failed"); }
     }],
     null,
-    ["Delete…", () => askLiquid(
-      `Delete the ${app.name} app (remove apps/${app.id} and commit; git history keeps a copy).`
-    ), "danger"],
+    ["Delete…", async () => {
+      if (!confirm(`Delete ${app.name}? Its files are removed in a commit — git history keeps a copy.`)) return;
+      try {
+        const r = await api(`/api/apps/${encodeURIComponent(app.id)}`, { method: "DELETE" });
+        if (r.ok) toast(`${app.name} deleted (history keeps it)`);
+        else toast((await r.json().catch(() => ({})))?.error || "Delete failed");
+      } catch { toast("Delete failed"); }
+    }, "danger"],
   ];
   for (const item of items) {
     if (item === null) { menu.appendChild(document.createElement("hr")); continue; }

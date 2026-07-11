@@ -340,6 +340,29 @@ try {
     console.log("  (skip) no non-loopback interface for remote-denial checks");
   }
 
+  // --- direct app management: rename/share/delete are platform ops, no LLM ---
+  console.log("app management");
+  {
+    const patch = (id: string, body: object) =>
+      j(`/api/apps/${id}/manifest`, { method: "PATCH", body: JSON.stringify(body) }, token);
+    check("rename lands (validated, committed, deployed)",
+      (await patch("shared", { name: "Shared Board" })).status === 200
+      && ((await j("/api/apps", {}, token)).body?.apps ?? []).some((a: any) => a.id === "shared" && a.name === "Shared Board"));
+    check("a silly name is rejected (400)", (await patch("shared", { name: "" })).status === 400);
+    check("visibility flips to private and guests are locked out",
+      (await patch("shared", { visibility: "private" })).status === 200
+      && await until("shared now denies guests", async () => (await fetch(`${BASE}/app/shared/`)).status === 401).then(() => true, () => false));
+    check("…and back to public reopens it",
+      (await patch("shared", { visibility: "public" })).status === 200
+      && await until("shared public again", async () => (await fetch(`${BASE}/app/shared/`)).status === 200).then(() => true, () => false));
+    check("patching a missing app 404s", (await patch("nope", { name: "x" })).status === 404);
+    check("delete removes the app in a commit",
+      (await j("/api/apps/bad", { method: "DELETE" }, token)).status === 200
+      && await until("bad is gone", async () => (await app("/app/bad/")).status === 404).then(() => true, () => false));
+    check("…but git history keeps it",
+      git("log --oneline -- apps/bad").includes("add bad"));
+  }
+
   // --- graduation ---
   console.log("graduation");
   const grad = await j("/api/apps/good/graduate", { method: "POST", body: JSON.stringify({ remote: REMOTE }) }, token);

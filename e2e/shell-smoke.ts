@@ -250,6 +250,15 @@ try {
   check("closing the preview removes its dock entry",
     await page.$eval("#dock", (d) => ![...d.querySelectorAll("button")].some((b) => b.title === "Test image")));
 
+  // Direct app management from the context menu: rename is a form → a commit
+  // → a live grid update — no LLM in the loop.
+  await page.$eval('.appicon[data-id="board"]', (el) => el.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, clientX: 300, clientY: 300 })));
+  await page.waitForFunction(() => document.getElementById("appmenu")!.classList.contains("open"), { timeout: 3000 });
+  page.once("dialog", (d) => d.accept("Board Deluxe"));
+  await page.$$eval("#appmenu button", (bs) => (bs.find((b) => /Rename/.test(b.textContent || "")) as HTMLElement).click());
+  await page.waitForFunction(() => [...document.querySelectorAll(".appicon .label")].some((l) => /Board Deluxe/.test(l.textContent || "")), { timeout: 8000 });
+  check("context-menu rename edits the manifest directly (no LLM) and the grid updates live", true);
+
   // The chat header doubles as a drag handle; its pointerdown handler must NOT
   // preventDefault on interactive controls — that silently kills the model
   // <select>'s native dropdown (regression: "can't click the model selector").

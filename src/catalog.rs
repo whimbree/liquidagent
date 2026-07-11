@@ -322,13 +322,10 @@ pub async fn list(State(state): State<AppState>) -> Json<serde_json::Value> {
     Json(json!({ "apps": entries(&state.workspace_dir, &state.served_dir) }))
 }
 
-/// Shared preconditions for install/update: the target must be a library app
-/// and the pipeline must be quiet (a direct post-commit deploy must never
-/// sneak unreviewed agent commits out).
-fn guard(state: &AppState, app: &str) -> Result<(), Response> {
-    if !CATALOG.get_dir(app).is_some() {
-        return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "no such app in the library" }))).into_response());
-    }
+/// The pipeline must be quiet before any supervisor-authored commit deploys
+/// directly — a direct deploy must never sneak unreviewed agent commits out.
+/// Shared by the library and by direct app management (apps.rs).
+pub(crate) fn ensure_pipeline_quiet(state: &AppState) -> Result<(), Response> {
     match state.deploy.undeployed_changes() {
         Ok(pending) if pending.is_empty() => Ok(()),
         Ok(_) => Err((
@@ -337,13 +334,38 @@ fn guard(state: &AppState, app: &str) -> Result<(), Response> {
         )
             .into_response()),
         Err(err) => {
-            warn!("catalog: pipeline check failed: {err:#}");
+            warn!("pipeline check failed: {err:#}");
             Err(StatusCode::INTERNAL_SERVER_ERROR.into_response())
         }
     }
 }
 
-fn commit_and_deploy(state: &AppState, app: &str, message: &str) -> Response {
+/// Shared preconditions for install/update: the target must be a library app
+/// and the pipeline must be quiet.
+fn guard(state: &AppState, app: &str) -> Result<(), Response> {
+    if CATALOG.get_dir(app).is_none() {
+        return Err((StatusCode::NOT_FOUND, Json(json!({ "error": "no such app in the library" }))).into_response());
+    }
+    ensure_pipeline_quiet(state)
+}
+
+/// Commit `apps/<app>` (pathspec-scoped: a dirty workspace elsewhere is never
+/// swept in) and deploy directly. Used for supervisor-authored changes only —
+/// library bytes or form-constrained manifest edits, always human-initiated.
+/// What a successful deploy must look like for the app afterwards — present
+/// in the served worktree (install/update/edit) or absent (delete).
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum ServedExpectation {
+    Present,
+    Absent,
+}
+
+pub(crate) fn commit_and_deploy(
+    state: &AppState,
+    app: &str,
+    message: &str,
+    expect: ServedExpectation,
+) -> Response {
     let pathspec = format!("apps/{app}");
     let committed = git(&state.workspace_dir, &["add", "--", &pathspec]).and_then(|()| {
         // Pathspec-scoped commit: a dirty workspace (agent mid-thought) must
@@ -358,14 +380,14 @@ fn commit_and_deploy(state: &AppState, app: &str, message: &str) -> Response {
         )
             .into_response();
     }
-    deploy_head(state, app)
+    deploy_head(state, app, expect)
 }
 
 /// The bytes are platform-shipped and the human asked, so library commits are
 /// pre-approved: deploy directly rather than riding the agent review gate.
-/// VERIFIES the app actually landed in the served worktree — a success answer
-/// must mean "it is being served", never "the commit probably worked".
-fn deploy_head(state: &AppState, app: &str) -> Response {
+/// VERIFIES the served worktree matches the expectation — a success answer
+/// must mean "it is (not) being served", never "the commit probably worked".
+fn deploy_head(state: &AppState, app: &str, expect: ServedExpectation) -> Response {
     let deployed = state
         .deploy
         .head_commit()
@@ -373,12 +395,17 @@ fn deploy_head(state: &AppState, app: &str) -> Response {
     match deployed {
         Ok(head) => {
             crate::refresh_served_apps_pub(state);
-            if !state.served_dir.join("apps").join(app).join(apps::MANIFEST_FILE).exists() {
-                warn!("catalog {app}: deployed {head} but the app is missing from the served worktree");
+            let present = state.served_dir.join("apps").join(app).join(apps::MANIFEST_FILE).exists();
+            if present != (expect == ServedExpectation::Present) {
+                warn!("catalog {app}: deployed {head} but served state is wrong (present={present})");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(json!({
-                        "error": "committed, but the app did not land in the served worktree — check the supervisor log (was everything gitignored?)",
+                        "error": if present {
+                            "committed, but the app is still in the served worktree"
+                        } else {
+                            "committed, but the app did not land in the served worktree — check the supervisor log (was everything gitignored?)"
+                        },
                         "commit": head,
                     })),
                 )
@@ -415,7 +442,7 @@ pub async fn install(State(state): State<AppState>, UrlPath(app): UrlPath<String
         warn!("catalog install of {app} failed: {err:#}");
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    commit_and_deploy(&state, &app, &format!("Install {app} from the built-in app library"))
+    commit_and_deploy(&state, &app, &format!("Install {app} from the built-in app library"), ServedExpectation::Present)
 }
 
 #[derive(Deserialize)]
@@ -477,7 +504,7 @@ pub async fn update(
                 warn!("catalog replace of {app} failed: {err:#}");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
-            commit_and_deploy(&state, &app, &format!("Replace {app} with the current library version"))
+            commit_and_deploy(&state, &app, &format!("Replace {app} with the current library version"), ServedExpectation::Present)
         }
         UpdateMode::Merge => {
             let Some(base) = base_commit(&state.workspace_dir, &app) else {
@@ -492,7 +519,7 @@ pub async fn update(
                 write_app_content(dir, apps_root)
             };
             match merge_update(&state.workspace_dir, &app, &base, &write) {
-                Ok(MergeOutcome::Merged) => deploy_head(&state, &app),
+                Ok(MergeOutcome::Merged) => deploy_head(&state, &app, ServedExpectation::Present),
                 Ok(MergeOutcome::Conflicts { files }) => (
                     StatusCode::CONFLICT,
                     Json(json!({

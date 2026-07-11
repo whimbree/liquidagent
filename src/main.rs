@@ -195,6 +195,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/cookie", axum::routing::post(api::auth_cookie))
         .route("/api/settings", get(api::get_settings).put(api::put_settings))
         .route("/api/apps", get(apps::list_apps))
+        .route(
+            "/api/apps/{app}/manifest",
+            axum::routing::patch(apps::patch_manifest),
+        )
+        .route("/api/apps/{app}", axum::routing::delete(apps::delete_app))
         .route("/api/apps/{app}/log", get(apps::app_log))
         .route("/api/catalog", get(catalog::list))
         .route(

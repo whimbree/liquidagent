@@ -490,6 +490,123 @@ fn mime_for(path: &Path) -> &'static str {
     }
 }
 
+// --- direct app management (no LLM): form-constrained manifest edits -------------
+// Deterministic one-field operations (rename, icon, share/visibility, delete)
+// are platform UI, not agent conversations. The supervisor applies them,
+// commits (so the audit trail holds), and deploys — pre-approved because the
+// bytes are form-constrained and human-initiated, guarded by the same
+// quiet-pipeline rule as library installs.
+
+/// PATCH /api/apps/{app}/manifest — partial manifest update. Unknown keys in
+/// app.json are preserved (the agent may have added its own).
+#[derive(Deserialize)]
+pub struct ManifestPatch {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    icon: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    visibility: Option<Visibility>,
+}
+
+pub async fn patch_manifest(
+    State(state): State<AppState>,
+    UrlPath(app): UrlPath<String>,
+    Json(patch): Json<ManifestPatch>,
+) -> Response {
+    if !is_safe_app_id(&app) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let manifest_path = state.workspace_dir.join(APPS_DIR).join(&app).join(MANIFEST_FILE);
+    let Ok(raw) = std::fs::read_to_string(&manifest_path) else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "no such app" }))).into_response();
+    };
+    if let Err(denied) = crate::catalog::ensure_pipeline_quiet(&state) {
+        return denied;
+    }
+    let Ok(mut manifest) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": "app.json is not valid JSON right now — ask liquid to fix it" })),
+        )
+            .into_response();
+    };
+
+    let mut changes: Vec<String> = Vec::new();
+    if let Some(name) = &patch.name {
+        let name = name.trim();
+        if name.is_empty() || name.chars().count() > 60 {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": "name must be 1–60 characters" }))).into_response();
+        }
+        manifest["name"] = json!(name);
+        changes.push(format!("rename to “{name}”"));
+    }
+    if let Some(icon) = &patch.icon {
+        let icon = icon.trim();
+        if icon.is_empty() || icon.chars().count() > 8 {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": "icon should be an emoji (1–8 chars)" }))).into_response();
+        }
+        manifest["icon"] = json!(icon);
+        changes.push(format!("set icon {icon}"));
+    }
+    if let Some(description) = &patch.description {
+        let description = description.trim();
+        if description.chars().count() > 200 {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": "description is capped at 200 characters" }))).into_response();
+        }
+        manifest["description"] = json!(description);
+        changes.push("update description".to_string());
+    }
+    if let Some(visibility) = patch.visibility {
+        manifest["visibility"] = serde_json::to_value(visibility).expect("visibility serializes");
+        changes.push(match visibility {
+            Visibility::Public => "make public (guests can open it by link)".to_string(),
+            Visibility::Private => "make private".to_string(),
+        });
+    }
+    if changes.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "nothing to change" }))).into_response();
+    }
+
+    let pretty = serde_json::to_string_pretty(&manifest).expect("manifest serializes") + "\n";
+    if let Err(err) = std::fs::write(&manifest_path, pretty) {
+        warn!("manifest patch for {app} failed: {err:#}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    crate::catalog::commit_and_deploy(
+        &state,
+        &app,
+        &format!("Update {app}: {}", changes.join(", ")),
+        crate::catalog::ServedExpectation::Present,
+    )
+}
+
+/// DELETE /api/apps/{app} — remove the app (a commit: git history keeps it).
+pub async fn delete_app(State(state): State<AppState>, UrlPath(app): UrlPath<String>) -> Response {
+    if !is_safe_app_id(&app) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let dir = state.workspace_dir.join(APPS_DIR).join(&app);
+    if !dir.exists() {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "no such app" }))).into_response();
+    }
+    if let Err(denied) = crate::catalog::ensure_pipeline_quiet(&state) {
+        return denied;
+    }
+    if let Err(err) = std::fs::remove_dir_all(&dir) {
+        warn!("delete of {app} failed: {err:#}");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+    crate::catalog::commit_and_deploy(
+        &state,
+        &app,
+        &format!("Remove {app} (git history keeps it)"),
+        crate::catalog::ServedExpectation::Absent,
+    )
+}
+
 /// GET /api/apps/{app}/log — the app's git history within the workspace repo.
 pub async fn app_log(
     State(state): State<AppState>,
