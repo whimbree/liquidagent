@@ -3,6 +3,7 @@ mod api;
 mod apps;
 mod auth;
 mod backends;
+mod catalog;
 mod config;
 mod db;
 mod deploy;
@@ -47,6 +48,9 @@ const PWA_MANIFEST: &str = r##"{
 }"##;
 
 /// Workspace template, embedded so first-run init needs no runtime paths.
+/// Apps are NOT listed here — they live in the built-in app library
+/// (catalog.rs, everything under default-workspace/apps/); first boot seeds
+/// StrongLifts from it, the rest install on demand from the shell.
 const WORKSPACE_TEMPLATE: &[(&str, &str)] = &[
     ("MYSELF.md", include_str!("../default-workspace/MYSELF.md")),
     ("MYHUMAN.md", include_str!("../default-workspace/MYHUMAN.md")),
@@ -54,12 +58,12 @@ const WORKSPACE_TEMPLATE: &[(&str, &str)] = &[
     (".gitignore", include_str!("../default-workspace/.gitignore")),
     ("PULSE.json", include_str!("../default-workspace/PULSE.json")),
     ("CRONS.json", include_str!("../default-workspace/CRONS.json")),
-    // A real, useful app shipped built-in: a StrongLifts 5×5 tracker (buildless,
-    // offline, mobile-first). Seeded so a fresh install has something to open.
-    ("apps/stronglifts/app.json", include_str!("../default-workspace/apps/stronglifts/app.json")),
-    ("apps/stronglifts/index.html", include_str!("../default-workspace/apps/stronglifts/index.html")),
-    ("apps/stronglifts/backend/index.ts", include_str!("../default-workspace/apps/stronglifts/backend/index.ts")),
 ];
+
+/// Library apps seeded into a BRAND-NEW workspace (a fresh install should
+/// have something real to open). Existing workspaces are never touched —
+/// they pick and choose from the library instead.
+const SEEDED_APPS: &[&str] = &["stronglifts"];
 
 const CLIENT_EVENT_CAPACITY: usize = 1024;
 
@@ -192,6 +196,15 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/settings", get(api::get_settings).put(api::put_settings))
         .route("/api/apps", get(apps::list_apps))
         .route("/api/apps/{app}/log", get(apps::app_log))
+        .route("/api/catalog", get(catalog::list))
+        .route(
+            "/api/catalog/{app}/install",
+            axum::routing::post(catalog::install),
+        )
+        .route(
+            "/api/catalog/{app}/update",
+            axum::routing::post(catalog::update),
+        )
         .route(
             "/api/apps/{app}/graduate",
             axum::routing::post(apps::graduate),
@@ -681,6 +694,9 @@ fn init_workspace(dir: &Path) -> anyhow::Result<()> {
             }
             std::fs::write(&path, contents)
                 .with_context(|| format!("seeding {name}"))?;
+        }
+        for app in SEEDED_APPS {
+            catalog::extract_app(app, dir).with_context(|| format!("seeding {app}"))?;
         }
         info!("created workspace at {} from template", dir.display());
     }

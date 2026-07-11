@@ -2,6 +2,9 @@
  * Permanent guard for the polyglot + full-surface + realtime stack (ADRs
  * 0002/0003), proven by the Phoenix/Elixir collaborative whiteboard:
  *
+ *   - the BUILT-IN APP LIBRARY: the whiteboard ships embedded in the binary
+ *     and installs into the workspace through POST /api/catalog (copy →
+ *     commit → deploy) — the real pick-and-choose flow, not a fixture copy;
  *   - a NON-BUN backend: the supervisor spawns `mix phx.server` from the
  *     manifest's declared argv, injects PORT, and health-gates on /health
  *     (first boot COMPILES the vendored deps — the slow-start path is real);
@@ -13,19 +16,18 @@
  *
  *   nix develop --command bun run e2e/whiteboard.ts
  *
- * Offline: deps/ is vendored in the fixture, hex comes from MIX_PATH, the
- * fake harness needs no credentials.
+ * Offline: deps/ is vendored (embedded with the app), hex comes from
+ * MIX_PATH, the fake harness needs no credentials.
  */
 import puppeteer, { type Page } from "puppeteer-core";
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { execSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const PORT = 3247;
 const BASE = `http://127.0.0.1:${PORT}`;
 const REPO = new URL("..", import.meta.url).pathname.replace(/\/$/, "");
-const FIXTURE = join(REPO, "e2e", "fixtures", "whiteboard");
 const root = join(tmpdir(), `liquid-wb-e2e-${process.pid}`);
 const WS = join(root, "workspace");
 const DATA = join(root, "data");
@@ -42,19 +44,6 @@ async function until(what: string, fn: () => Promise<boolean>, ms = 30000, step 
   console.log(`  … timeout waiting for: ${what}`);
   return false;
 }
-const git = (a: string) => execSync(`git ${a}`, { cwd: WS }).toString().trim();
-
-// The fake harness claims used_file_tools on every reply, so one chat message
-// makes the supervisor run its post-query deploy reconcile (vibe → live).
-function nudge(token: string): Promise<void> {
-  return new Promise((res, rej) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws?token=${token}`);
-    const t = setTimeout(() => { ws.close(); rej(new Error("nudge timeout")); }, 15000);
-    ws.onopen = () => ws.send(JSON.stringify({ type: "user_message", content: "nudge", conversation_id: null }));
-    ws.onmessage = (m) => { if (JSON.parse(String(m.data)).type === "done") { clearTimeout(t); ws.close(); res(); } };
-  });
-}
-
 /** Draw a line on the board with real pointer events. */
 async function draw(page: Page, from: [number, number], to: [number, number], steps = 12) {
   const box = (await (await page.$("canvas"))!.boundingBox())!;
@@ -91,20 +80,22 @@ const browser = await puppeteer.launch({
 try {
   await until("supervisor up", async () => (await fetch(BASE + "/api/health")).ok, 90000);
 
-  // Install the whiteboard the way any app lands: files in the workspace, a
-  // commit, and the pipeline deploys it into the served worktree.
-  cpSync(FIXTURE, join(WS, "apps", "whiteboard"), {
-    recursive: true,
-    filter: (src) => !/\/(_build|data)(\/|$)/.test(src),
-  });
+  // Install the whiteboard through the built-in app library — the real
+  // pick-and-choose flow: embedded copy → workspace commit → deploy.
   const setup = await fetch(BASE + "/api/auth/setup", {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ password: PASS }),
   });
   const token = (await setup.json()).token as string;
-  git("add -A");
-  git('commit -q -m "add whiteboard"');
-  await nudge(token);
+  const auth = { Authorization: `Bearer ${token}` };
+  const catalog = async () =>
+    ((await (await fetch(BASE + "/api/catalog", { headers: auth })).json()).apps ?? []) as any[];
+  ok("the library lists the whiteboard, uninstalled",
+    (await catalog()).some((a) => a.id === "whiteboard" && a.installed === false));
+  const inst = await fetch(BASE + "/api/catalog/whiteboard/install", { method: "POST", headers: auth });
+  ok("one click installs it (embedded copy → commit → deploy)", inst.status === 200);
+  ok("…and the library now shows it installed and current",
+    (await catalog()).some((a) => a.id === "whiteboard" && a.installed && !a.update_available));
 
   // First boot compiles the vendored Phoenix deps inside the served worktree —
   // the health gate has to carry a genuinely slow-starting backend.

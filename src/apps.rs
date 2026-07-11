@@ -12,7 +12,7 @@ use tracing::{info, warn};
 use crate::AppState;
 
 const APPS_DIR: &str = "apps";
-const MANIFEST_FILE: &str = "app.json";
+pub const MANIFEST_FILE: &str = "app.json";
 const DEFAULT_ICON: &str = "📦";
 
 /// Optional window geometry an app can declare (camelCase in JSON). Absent
@@ -72,22 +72,27 @@ pub struct BackendSpec {
     pub env: HashMap<String, String>,
 }
 
-/// What the agent writes to apps/<id>/app.json.
+/// What the agent writes to apps/<id>/app.json. pub(crate) so the built-in
+/// app library (catalog.rs) parses embedded manifests with the same rules.
 #[derive(Debug, Deserialize)]
-struct RawManifest {
-    name: String,
+pub(crate) struct RawManifest {
+    pub(crate) name: String,
     #[serde(default)]
-    icon: Option<String>,
+    pub(crate) icon: Option<String>,
     #[serde(default)]
-    description: Option<String>,
+    pub(crate) description: Option<String>,
     #[serde(default)]
-    window: Option<AppWindow>,
+    pub(crate) window: Option<AppWindow>,
     #[serde(default)]
-    visibility: Visibility,
+    pub(crate) visibility: Visibility,
     #[serde(default)]
-    surface: Surface,
+    pub(crate) surface: Surface,
     #[serde(default)]
-    backend: Option<BackendSpec>,
+    pub(crate) backend: Option<BackendSpec>,
+}
+
+pub(crate) fn parse_raw_manifest(raw: &str) -> Result<RawManifest, serde_json::Error> {
+    serde_json::from_str(raw)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -113,7 +118,7 @@ pub struct AppManifest {
 /// Bun. Declared `backend` blocks in app.json take precedence.
 pub const BUN_BACKEND_ENTRY: &str = "backend/index.ts";
 
-fn default_bun_spec() -> BackendSpec {
+pub(crate) fn default_bun_spec() -> BackendSpec {
     BackendSpec {
         run: vec!["bun".into(), "run".into(), BUN_BACKEND_ENTRY.into()],
         health: None,

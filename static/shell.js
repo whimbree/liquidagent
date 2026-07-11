@@ -1783,10 +1783,78 @@ async function loadSettings() {
   const m = $("model-msg"); m.textContent = ""; m.className = "msg";
   initAppearanceControls();
   loadBuildInfo();
+  loadCatalog();
   try {
     const s = await (await api("/api/settings")).json();
     $in("model-select").value = s.model || "default";
   } catch {}
+}
+
+/** @typedef {{id:string,name:string,icon:string,description:string,runtime?:string,runtime_available:boolean,installed:boolean,update_available:boolean,local_changes:boolean}} CatalogEntry */
+
+/** The built-in app library: install any time; updates are git merges of the
+ *  new library version onto your evolved copy (or a clean replace). */
+async function loadCatalog() {
+  const list = $("catalog-list");
+  const msg = $("catalog-msg");
+  msg.textContent = ""; msg.className = "msg";
+  try {
+    /** @type {CatalogEntry[]} */
+    const apps = (await (await api("/api/catalog")).json()).apps || [];
+    list.innerHTML = "";
+    for (const app of apps) {
+      const row = document.createElement("div");
+      row.className = "cat-row";
+      row.dataset.app = app.id;
+      const icon = document.createElement("span"); icon.className = "cat-icon"; icon.textContent = app.icon;
+      const info = document.createElement("div"); info.className = "cat-info";
+      const name = document.createElement("div"); name.className = "cat-name"; name.textContent = app.name;
+      const desc = document.createElement("div"); desc.className = "cat-desc"; desc.textContent = app.description;
+      info.append(name, desc);
+      row.append(icon, info);
+      /** @param {string} label @param {() => Promise<Response>} call @param {string} [confirm_] */
+      const action = (label, call, confirm_) => {
+        const b = document.createElement("button");
+        b.textContent = label;
+        b.onclick = async () => {
+          if (confirm_ && !confirm(confirm_)) return;
+          b.disabled = true; msg.className = "msg"; msg.textContent = `${label}ing ${app.name}…`;
+          try {
+            const r = await call();
+            const body = await r.json().catch(() => null);
+            if (r.ok) { msg.className = "msg ok"; msg.textContent = `${app.name}: done.`; }
+            else { msg.className = "msg err"; msg.textContent = body?.error || `${label} failed (${r.status})`; }
+          } catch { msg.className = "msg err"; msg.textContent = `${label} failed.`; }
+          loadCatalog();
+        };
+        return b;
+      };
+      const actions = document.createElement("div"); actions.className = "cat-actions";
+      if (!app.installed) {
+        const b = action("Install", () => api(`/api/catalog/${app.id}/install`, { method: "POST" }));
+        if (app.runtime && !app.runtime_available) {
+          b.disabled = true;
+          b.title = `needs ${app.runtime} on the host`;
+          const st = document.createElement("span"); st.className = "cat-desc"; st.textContent = `needs ${app.runtime}`;
+          actions.append(st);
+        }
+        actions.append(b);
+      } else if (app.update_available) {
+        const st = document.createElement("span"); st.className = "cat-desc"; st.textContent = "update available";
+        actions.append(st);
+        actions.append(action("Update", () =>
+          api(`/api/catalog/${app.id}/update`, { method: "POST", body: JSON.stringify({ mode: "merge" }) })));
+        actions.append(action("Replace", () =>
+          api(`/api/catalog/${app.id}/update`, { method: "POST", body: JSON.stringify({ mode: "replace" }) }),
+          app.local_changes ? `Replace ${app.name} with the library copy? Your local changes leave the working copy (git history keeps them).` : undefined));
+      } else {
+        const st = document.createElement("span"); st.className = "cat-state"; st.textContent = "Installed ✓";
+        actions.append(st);
+      }
+      row.append(actions);
+      list.append(row);
+    }
+  } catch { list.textContent = "library unavailable"; }
 }
 
 /** System panel: which platform commits are actually running, linked to

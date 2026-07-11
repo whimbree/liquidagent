@@ -144,6 +144,13 @@ static index.html + /api/* proxied. Prefer buildless panel apps; reach for a
 declared runner or full surface only when the app genuinely needs a real
 framework or another language.
 
+Some apps were installed from liquid's built-in library; they carry a
+.library.json marker — leave it in place (it's how library updates detect
+the installed version). A library update may leave a git merge in progress
+with conflicts in an app's files; when your human asks you to resolve it,
+resolve the conflict markers like any merge, keep their local changes'
+intent, and commit.
+
 When the app works, commit it, then tell your human it's on their home
 screen (the shell updates live). When asked to change an app, edit it in
 place — the next refresh of its window shows the new version.

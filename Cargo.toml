@@ -15,6 +15,7 @@ data-encoding = "2"
 hkdf = "0.12"
 p256 = { version = "0.13", features = ["ecdsa", "ecdh"] }
 hyper = "1"
+include_dir = "0.7"
 hyper-util = { version = "0.1", features = ["client", "client-legacy", "http1", "tokio"] }
 rand = "0.9"
 rusqlite = { version = "0.32", features = ["bundled"] }

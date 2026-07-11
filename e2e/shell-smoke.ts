@@ -172,6 +172,17 @@ try {
   await page.click("#settingsbtn");
   await page.waitForFunction(() => /Binary/.test(document.getElementById("sys-build")?.textContent || ""), { timeout: 5000 });
   check("settings shows the running platform build", true);
+
+  // settings → App library: seeded app reads installed, the whiteboard is one
+  // click away — and installing it pops the icon onto the home screen live.
+  await page.waitForFunction(() => document.querySelectorAll("#catalog-list .cat-row").length >= 2, { timeout: 5000 });
+  check("the app library lists the built-ins",
+    await page.$eval("#catalog-list", (el) =>
+      /Installed ✓/.test(el.querySelector('.cat-row[data-app="stronglifts"]')?.textContent || "") &&
+      !!el.querySelector('.cat-row[data-app="whiteboard"] button')));
+  await page.click('#catalog-list .cat-row[data-app="whiteboard"] button');
+  await page.waitForSelector('.appicon[data-id="whiteboard"]', { timeout: 15000 });
+  check("installing from the library lands the app on the home screen, live", true);
   await page.click("#panelclose");
 
   check("the desktop chat is resizable like a window", (await page.$eval("#chat", (e) => getComputedStyle(e).resize)) === "both");

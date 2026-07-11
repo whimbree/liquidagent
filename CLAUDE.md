@@ -41,6 +41,7 @@ Two git trees, and the difference is the whole security model:
 | `ws.rs` | Chat WebSocket. `ClientMessage` in, `ServerEvent` out (the client-facing event union) |
 | `api.rs` | REST: conversations, auth, pipeline. `require_auth` middleware (Bearer or `?token=`) |
 | `apps.rs` | App manifest scanning, traversal-safe static serving, per-app KV, `SHELL.json`, per-app git log |
+| `catalog.rs` | The built-in app library (ADR 0004): `default-workspace/apps/` embedded via build.rs, install/update endpoints, git-native 3-way library merges |
 | `backends.rs` | Per-app backend lifecycle (declared `backend.run` argv per ADR 0002, Bun default; spawn/restart/crash-policy) + the reverse proxy (`/app/<id>/api/*`, whole namespace for `surface:"full"`, WebSocket upgrade passthrough) |
 | `deploy.rs` | `DeployManager`: the worktree, pipeline modes (vibe/reviewed), the review gate |
 | `scheduler.rs` | 60s tick; PULSE + CRON from workspace JSON → agent queries in the "⏰ Scheduled" conversation |

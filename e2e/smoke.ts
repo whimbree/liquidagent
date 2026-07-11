@@ -151,6 +151,38 @@ try {
   await until("good served", async () => (await app("/app/good/")).status === 200);
   check("reviewed+approved deploys", (await j("/api/pipeline", {}, token)).body?.status?.state === "clean");
 
+  // --- the built-in app library: list / install-guards / diverge / replace ---
+  console.log("app library");
+  {
+    const cat = async () => ((await j("/api/catalog", {}, token)).body?.apps ?? []) as any[];
+    const apps = await cat();
+    check("the library lists seeded stronglifts as installed & current",
+      apps.some((a) => a.id === "stronglifts" && a.installed && !a.update_available && !a.local_changes));
+    check("the library lists the whiteboard (mix runtime), uninstalled",
+      apps.some((a) => a.id === "whiteboard" && !a.installed && a.runtime === "mix" && a.surface === "full"));
+    check("reinstalling an installed app is refused (409)",
+      (await j("/api/catalog/stronglifts/install", { method: "POST" }, token)).status === 409);
+    check("updating an uninstalled app is refused (409)",
+      (await j("/api/catalog/whiteboard/update", { method: "POST", body: JSON.stringify({ mode: "merge" }) }, token)).status === 409);
+    check("installing a non-library app 404s",
+      (await j("/api/catalog/notreal/install", { method: "POST" }, token)).status === 404);
+
+    // Diverge the workspace copy (as the agent would), then REPLACE restores
+    // the pristine library version in a new commit — history keeps the fork.
+    writeFileSync(join(WS, "apps", "stronglifts", "index.html"), "<!doctype html><h1>heavily customized</h1>");
+    git("add -A"); git('commit -q -m "customize stronglifts"');
+    await nudge(token); // deploy the divergence so the pipeline is quiet again
+    await until("divergence deployed", async () => (await j("/api/pipeline", {}, token)).body?.status?.state === "clean");
+    check("local evolution is detected", (await cat()).some((a) => a.id === "stronglifts" && a.local_changes));
+    const replaced = await j("/api/catalog/stronglifts/update", { method: "POST", body: JSON.stringify({ mode: "replace" }) }, token);
+    check("replace restores the library copy in a commit", replaced.status === 200);
+    await until("restored app served", async () =>
+      !(await (await app("/app/stronglifts/")).text()).includes("heavily customized"));
+    check("…and it deploys (the customization is gone, history keeps it)", true);
+    check("…after which the copy reads current again",
+      (await cat()).some((a) => a.id === "stronglifts" && a.installed && !a.local_changes));
+  }
+
   // --- polyglot backends (ADR 0002): a DECLARED runner, not the bun default ---
   // The app declares its own argv (custom entrypoint at the app root — no
   // backend/index.ts anywhere), a health path the supervisor must poll, and

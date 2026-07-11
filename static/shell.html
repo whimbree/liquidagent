@@ -405,6 +405,18 @@
   .setting-section .msg { font-size:0.82rem; min-height:1.1em; }
   .setting-section .msg.ok { color:#8fd0a0; }
   .setting-section .msg.err { color:#f0a0a0; }
+  #catalog-list .cat-row { display:flex; align-items:center; gap:0.6rem; padding:0.45rem 0;
+    border-bottom:1px solid var(--line); }
+  #catalog-list .cat-row:last-child { border-bottom:none; }
+  #catalog-list .cat-icon { font-size:1.3rem; flex:none; }
+  #catalog-list .cat-info { flex:1; min-width:0; }
+  #catalog-list .cat-name { font-size:0.86rem; color:#c9c9d4; }
+  #catalog-list .cat-desc { font-size:0.74rem; color:var(--dim); overflow:hidden;
+    text-overflow:ellipsis; white-space:nowrap; }
+  #catalog-list .cat-state { font-size:0.75rem; color:#8fd0a0; flex:none; }
+  #catalog-list .cat-actions { display:flex; gap:0.35rem; flex:none; }
+  #catalog-list button { font-size:0.75rem; padding:0.25rem 0.6rem; }
+  #catalog-list button:disabled { opacity:0.5; cursor:default; }
   #sys-build a { color:#c9c9d4; }
   #sys-build .sys-rev { font-family:ui-monospace, monospace; }
   #sys-build .sys-badge.ok { color:#8fd0a0; }
@@ -540,6 +552,15 @@
           <button type="submit">Change password</button>
           <div class="msg" id="pw-msg"></div>
         </form>
+      </div>
+      <div class="setting-section">
+        <h3>App library</h3>
+        <p class="hint">Apps that ship with liquid. Installing copies one into your workspace
+        — it becomes yours to evolve. When the library ships a newer version, update merges
+        it on top of your changes (git three-way; conflicts wait for you), or replace starts
+        fresh from the library copy.</p>
+        <div id="catalog-list"></div>
+        <div class="msg" id="catalog-msg"></div>
       </div>
       <div class="setting-section">
         <h3>System</h3>
