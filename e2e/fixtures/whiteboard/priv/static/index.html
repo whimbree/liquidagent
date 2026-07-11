@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Whiteboard</title>
+<style>
+  :root { --bg:#101014; --panel:#1a1a22; --line:#2a2a34; --text:#e8e8ef; --dim:#8b8b98; }
+  * { box-sizing:border-box; margin:0; }
+  html, body { height:100%; overflow:hidden; }
+  body {
+    background:var(--bg); color:var(--text);
+    font:14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display:flex; flex-direction:column;
+  }
+  header {
+    display:flex; align-items:center; gap:0.75rem; padding:0.5rem 0.85rem;
+    background:var(--panel); border-bottom:1px solid var(--line); flex:none;
+    flex-wrap:wrap;
+  }
+  header .title { font-weight:600; letter-spacing:0.02em; }
+  header .spacer { flex:1; }
+  #status { font-size:0.78rem; color:var(--dim); }
+  #status.on { color:#6bcb77; }
+  #peers { display:flex; align-items:center; gap:0.3rem; }
+  #peers .dot {
+    width:14px; height:14px; border-radius:50%; border:2px solid var(--bg);
+    margin-left:-6px; box-shadow:0 0 0 1px var(--line);
+  }
+  #peers .dot:first-child { margin-left:0; }
+  #peers .count { font-size:0.78rem; color:var(--dim); margin-left:0.35rem; }
+  .me { display:flex; align-items:center; gap:0.4rem; font-size:0.78rem; color:var(--dim); }
+  .me .swatch { width:16px; height:16px; border-radius:50%; box-shadow:0 0 0 1px var(--line); }
+  input[type="range"] { width:90px; accent-color:#4d96ff; }
+  button {
+    background:transparent; color:var(--dim); border:1px solid var(--line);
+    border-radius:8px; padding:0.3rem 0.7rem; font:inherit; font-size:0.8rem; cursor:pointer;
+  }
+  button:hover { color:var(--text); background:#ffffff10; }
+  main { position:relative; flex:1; min-height:0; }
+  canvas {
+    position:absolute; inset:0; width:100%; height:100%;
+    touch-action:none; cursor:crosshair;
+    background-image:radial-gradient(#ffffff0d 1px, transparent 1px);
+    background-size:24px 24px;
+  }
+  .cursor { position:absolute; pointer-events:none; transition:transform 60ms linear; z-index:3; }
+  .cursor .arrow { width:10px; height:10px; border-radius:50% 50% 50% 0; transform:rotate(-45deg); }
+  .cursor .tag {
+    font-size:0.65rem; color:var(--bg); border-radius:6px; padding:0 0.3rem;
+    margin-top:2px; margin-left:6px; font-weight:600; white-space:nowrap;
+  }
+  #toast {
+    position:absolute; left:50%; bottom:1rem; transform:translateX(-50%);
+    background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:0.4rem 0.9rem; font-size:0.8rem; color:var(--dim);
+    opacity:0; transition:opacity 200ms; pointer-events:none; z-index:4;
+  }
+  #toast.show { opacity:1; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="title">🎨 Whiteboard</span>
+    <span id="status">connecting…</span>
+    <span class="spacer"></span>
+    <span id="peers"></span>
+    <span class="me">you <span class="swatch" id="mycolor"></span></span>
+    <input id="width" type="range" min="1" max="16" value="3" title="Stroke width">
+    <button id="clear" title="Clear the board for everyone">Clear</button>
+  </header>
+  <main>
+    <canvas id="board"></canvas>
+    <div id="toast"></div>
+  </main>
+
+<script type="module">
+import { Socket, Presence } from "./phoenix.mjs";
+
+/* ---- identity: one anonymous artist per tab (public app: no storage,
+   the iframe may be sandboxed into an opaque origin) ---- */
+const me = crypto.randomUUID().slice(0, 8);
+
+/* ---- canvas: shared coordinate space is normalized to canvas WIDTH
+   (uniform scale — no distortion across differently-sized windows) ---- */
+const canvas = document.getElementById("board");
+const ctx = canvas.getContext("2d");
+let strokes = [];            // [{points:[[x,y],…], color, width, user}]
+let scale = 1, dpr = 1;
+
+function resize() {
+  const rect = canvas.getBoundingClientRect();
+  dpr = window.devicePixelRatio || 1;
+  canvas.width = Math.round(rect.width * dpr);
+  canvas.height = Math.round(rect.height * dpr);
+  scale = rect.width;
+  redraw();
+}
+function drawStroke(s) {
+  const pts = s.points;
+  if (!pts || pts.length < 1) return;
+  ctx.strokeStyle = s.color || "#e8e8ef";
+  ctx.lineWidth = (s.width || 3) * dpr;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  const P = (i) => [pts[i][0] * scale * dpr, pts[i][1] * scale * dpr];
+  const [x0, y0] = P(0);
+  ctx.moveTo(x0, y0);
+  if (pts.length === 1) { ctx.lineTo(x0 + 0.01, y0); ctx.stroke(); return; }
+  // smooth: quadratic through midpoints
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [xa, ya] = P(i), [xb, yb] = P(i + 1);
+    ctx.quadraticCurveTo(xa, ya, (xa + xb) / 2, (ya + yb) / 2);
+  }
+  const [xn, yn] = P(pts.length - 1);
+  ctx.lineTo(xn, yn);
+  ctx.stroke();
+}
+function redraw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  for (const s of strokes) drawStroke(s);
+}
+new ResizeObserver(resize).observe(canvas);
+
+/* ---- socket: path-relative so it works framed at /app/whiteboard/ ---- */
+const base = location.pathname.replace(/\/[^/]*$/, "").replace(/\/$/, "");
+const socket = new Socket(`${base}/socket`, { params: {} });
+socket.connect();
+const channel = socket.channel("board:main", { user: me });
+const statusEl = document.getElementById("status");
+socket.onOpen(() => { statusEl.textContent = "live"; statusEl.classList.add("on"); });
+socket.onClose(() => { statusEl.textContent = "reconnecting…"; statusEl.classList.remove("on"); });
+
+let myColor = "#e8e8ef";
+let joined = false;
+channel.join()
+  .receive("ok", (resp) => {
+    joined = true;
+    myColor = resp.color;
+    document.getElementById("mycolor").style.background = myColor;
+    strokes = resp.strokes || [];
+    redraw();
+  })
+  .receive("error", () => { statusEl.textContent = "join failed"; });
+
+channel.on("stroke", (s) => { strokes.push(s); drawStroke(s); });
+channel.on("clear", ({ user }) => { strokes = []; redraw(); toast(`board cleared by ${user}`); });
+
+/* ---- presence: colored dots for everyone here ---- */
+const presence = new Presence(channel);
+const peersEl = document.getElementById("peers");
+let peerList = [];
+presence.onSync(() => {
+  peerList = presence.list((id, { metas }) => ({ id, color: metas[0]?.color }));
+  peersEl.innerHTML = "";
+  for (const p of peerList.slice(0, 12)) {
+    const d = document.createElement("span");
+    d.className = "dot";
+    d.style.background = p.color || "#8b8b98";
+    d.title = p.id === me ? `${p.id} (you)` : p.id;
+    peersEl.appendChild(d);
+  }
+  const n = document.createElement("span");
+  n.className = "count";
+  n.textContent = `${peerList.length} here`;
+  peersEl.appendChild(n);
+});
+
+/* ---- live cursors ---- */
+const cursors = new Map(); // user -> {el, timer}
+channel.on("cursor", ({ user, color, x, y }) => {
+  if (user === me) return;
+  let c = cursors.get(user);
+  if (!c) {
+    const el = document.createElement("div");
+    el.className = "cursor";
+    el.innerHTML = `<div class="arrow"></div><div class="tag"></div>`;
+    el.querySelector(".arrow").style.background = color;
+    el.querySelector(".tag").style.background = color;
+    el.querySelector(".tag").textContent = user;
+    canvas.parentElement.appendChild(el);
+    c = { el, timer: 0 };
+    cursors.set(user, c);
+  }
+  const rect = canvas.getBoundingClientRect();
+  c.el.style.transform = `translate(${x * rect.width}px, ${y * rect.width}px)`;
+  clearTimeout(c.timer);
+  c.timer = setTimeout(() => { c.el.remove(); cursors.delete(user); }, 4000);
+});
+
+/* ---- drawing: stream stroke segments while the pointer moves, so others
+   watch lines appear as they're drawn, not after ---- */
+const SEGMENT_POINTS = 16;
+let drawing = false;
+let buffer = [];             // current segment, normalized points
+let live = null;             // my in-progress stroke (for local redraws)
+const widthEl = document.getElementById("width");
+
+const norm = (e) => {
+  const rect = canvas.getBoundingClientRect();
+  return [
+    Math.round(((e.clientX - rect.left) / rect.width) * 1e4) / 1e4,
+    Math.round(((e.clientY - rect.top) / rect.width) * 1e4) / 1e4,
+  ];
+};
+function sendSegment(final) {
+  if (buffer.length < 2 && !(final && buffer.length === 1)) return;
+  const seg = { points: buffer, color: myColor, width: Number(widthEl.value), user: me };
+  if (joined) channel.push("stroke", { points: seg.points, width: seg.width });
+  strokes.push(seg);
+  buffer = [buffer[buffer.length - 1]]; // overlap so segments connect
+}
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  drawing = true;
+  buffer = [norm(e)];
+  live = { points: buffer, color: myColor, width: Number(widthEl.value) };
+});
+canvas.addEventListener("pointermove", (e) => {
+  throttledCursor(e);
+  if (!drawing) return;
+  buffer.push(norm(e));
+  live.points = buffer;
+  drawStroke(live);
+  if (buffer.length >= SEGMENT_POINTS) sendSegment(false);
+});
+const endStroke = (e) => {
+  if (!drawing) return;
+  drawing = false;
+  if (e) buffer.push(norm(e));
+  sendSegment(true);
+  buffer = [];
+  live = null;
+};
+canvas.addEventListener("pointerup", endStroke);
+canvas.addEventListener("pointercancel", () => endStroke(null));
+
+/* cursor broadcasting, throttled */
+let lastCursor = 0;
+function throttledCursor(e) {
+  const now = performance.now();
+  if (now - lastCursor < 40 || !joined) return;
+  lastCursor = now;
+  const [x, y] = norm(e);
+  channel.push("cursor", { x, y });
+}
+
+document.getElementById("clear").onclick = () => { if (joined) channel.push("clear", {}); };
+
+const toastEl = document.getElementById("toast");
+let toastTimer = 0;
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => toastEl.classList.remove("show"), 2500);
+}
+
+/* ---- test hooks (e2e/whiteboard.ts drives a real browser) ---- */
+window.__wb = {
+  get joined() { return joined; },
+  get strokes() { return strokes.length; },
+  get peers() { return peerList.length; },
+  get cursors() { return cursors.size; },
+  get color() { return myColor; },
+};
+</script>
+</body>
+</html>

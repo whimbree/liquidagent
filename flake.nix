@@ -32,7 +32,14 @@
             # The Agent SDK's bundled CLI is dynamically linked and won't run
             # on NixOS; the harness resolves `claude` from PATH instead.
             claude-code
+            # Polyglot app backends (ADR 0002): the whiteboard proving case
+            # runs `mix phx.server`.
+            beamPackages.elixir
           ];
+          # Hex without a network fetch: mix loads the nix-built archive from
+          # MIX_PATH (the same trick nixpkgs' mixRelease uses), so vendored
+          # hex deps compile offline.
+          MIX_PATH = "${pkgs.beamPackages.hex}/lib/erlang/lib/hex/ebin";
         };
       });
 

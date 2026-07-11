@@ -1,0 +1,13 @@
+{
+  "name": "Whiteboard",
+  "icon": "🎨",
+  "description": "Draw together in real time — share the link, no login",
+  "visibility": "public",
+  "surface": "full",
+  "window": { "width": 900, "height": 640, "minWidth": 420, "minHeight": 360 },
+  "backend": {
+    "run": ["mix", "phx.server"],
+    "health": "/health",
+    "env": { "MIX_ENV": "prod" }
+  }
+}

@@ -99,6 +99,18 @@ in
       '';
     };
 
+    runtimePackages = lib.mkOption {
+      type = lib.types.listOf lib.types.package;
+      default = [ pkgs.beamPackages.elixir ];
+      defaultText = lib.literalExpression "[ pkgs.beamPackages.elixir ]";
+      description = ''
+        Language runtimes put on the service PATH for declared app backends
+        (ADR 0002: backend.run in app.json — e.g. ["mix", "phx.server"]).
+        Elixir ships by default for the whiteboard; add Go, Python, … here
+        as apps need them. Bun is always present.
+      '';
+    };
+
     chromiumPackage = lib.mkOption {
       type = lib.types.nullOr lib.types.package;
       default = null;
@@ -153,7 +165,8 @@ in
         pkgs.git
         pkgs.bun
         cfg.claudePackage
-      ] ++ lib.optional (cfg.chromiumPackage != null) cfg.chromiumPackage;
+      ] ++ cfg.runtimePackages
+        ++ lib.optional (cfg.chromiumPackage != null) cfg.chromiumPackage;
 
       environment = {
         HOME = cfg.dataDir;
@@ -172,6 +185,10 @@ in
           "${pkgs.bun}/bin/bun run ${agentBase}/share/liquid-agent/review.ts";
         LIQUID_CLAUDE_BIN = "${cfg.claudePackage}/bin/claude";
         LIQUID_PIPELINE_MODE = cfg.pipelineMode;
+        # Hex without a runtime network fetch: mix loads the nix-built archive
+        # (same trick as nixpkgs mixRelease), so an Elixir backend's vendored
+        # deps compile offline on first boot.
+        MIX_PATH = "${pkgs.beamPackages.hex}/lib/erlang/lib/hex/ebin";
       } // lib.optionalAttrs (cfg.chromiumPackage != null) {
         # Enables the agent's screenshot tool (headless chromium capture).
         LIQUID_CHROME = "${cfg.chromiumPackage}/bin/chromium";

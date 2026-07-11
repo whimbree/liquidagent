@@ -116,6 +116,34 @@ Backend rules:
 Only add a backend when the app actually needs one — KV-backed frontends
 stay simpler and never crash.
 
+### Beyond Bun: declared runners and full-surface apps
+
+Backends aren't limited to Bun. An app can declare how its server runs in
+app.json (the argv is spawned in the app's directory with PORT injected):
+
+    "backend": {
+      "run": ["mix", "phx.server"],      // any argv: elixir, a go binary, …
+      "health": "/health",               // optional HTTP readiness path
+      "env": {"MIX_ENV": "prod"}         // optional extra env
+    }
+
+The same contract applies: listen on PORT (also provided: LIQUID_APP_ID, and
+LIQUID_APP_DATA_DIR — the writable gitignored data/ dir). Vendor dependencies
+into the app directory and commit them (deps/ for mix) — the platform runs
+apps offline; a backend must never need the network to boot. Only runtimes on
+the host PATH work (bun and elixir today) — check before promising another
+language. WebSockets work: upgrades pass through the proxy on any backend
+path.
+
+And if a framework serves its own HTML (Phoenix, etc.), declare
+"surface": "full" — then EVERY request under /app/<id>/ (all paths, all
+methods, sockets) goes to your backend and index.html isn't needed. Your
+backend sees paths as the browser sent them minus the /app/<id> prefix, so
+use relative URLs in your pages. Panel (the default) keeps today's model:
+static index.html + /api/* proxied. Prefer buildless panel apps; reach for a
+declared runner or full surface only when the app genuinely needs a real
+framework or another language.
+
 When the app works, commit it, then tell your human it's on their home
 screen (the shell updates live). When asked to change an app, edit it in
 place — the next refresh of its window shows the new version.

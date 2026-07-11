@@ -1,0 +1,2 @@
+# Compile output only — deps/ is vendored on purpose so the app runs offline.
+/_build/

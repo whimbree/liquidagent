@@ -34,4 +34,7 @@ bun run e2e/stronglifts.ts
 step "e2e: chat image attachments (paste/store/serve/render)"
 bun run e2e/attachments.ts
 
+step "e2e: whiteboard (Phoenix backend, full surface, WS, guests)"
+bun run e2e/whiteboard.ts
+
 printf '\n✅ ALL CHECKS PASSED\n'

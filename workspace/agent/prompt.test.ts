@@ -23,6 +23,8 @@ describe("buildSystemPromptAppend", () => {
     expect(prompt).toContain("You are liquid");
     expect(prompt).toContain("Building apps");         // app skill section
     expect(prompt).toContain("/api/kv/");              // KV teaching
+    expect(prompt).toContain('"surface": "full"');     // polyglot/full-surface skill (ADR 0002/0003)
+    expect(prompt).toContain('"run": ["mix", "phx.server"]');
     expect(prompt).toContain("I am a test agent.");    // MYSELF.md content
     expect(prompt).toContain("- Name: bree");          // MYHUMAN.md content
     expect(prompt).toContain("tested the prompt builder"); // daily note
