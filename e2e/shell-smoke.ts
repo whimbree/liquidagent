@@ -197,17 +197,24 @@ try {
   await page.waitForFunction(() => /Binary/.test(document.getElementById("sys-build")?.textContent || ""), { timeout: 5000 });
   check("settings shows the running platform build", true);
 
-  // settings → App library: seeded app reads installed, the whiteboard is one
-  // click away — and installing it pops the icon onto the home screen live.
-  await page.waitForFunction(() => document.querySelectorAll("#catalog-list .cat-row").length >= 2, { timeout: 5000 });
-  check("the app library lists the built-ins",
-    await page.$eval("#catalog-list", (el) =>
+  await page.click("#panelclose");
+
+  // The library is its OWN window (a grid tile away), not a settings section:
+  // seeded app reads installed, the whiteboard is one click away — and
+  // installing it pops the icon onto the home screen live.
+  await page.click(".library-tile");
+  await page.waitForFunction(() => document.querySelectorAll(".libwin .cat-row").length >= 2, { timeout: 5000 });
+  check("the app library opens as its own desk window with the built-ins",
+    await page.$eval(".libwin", (el) =>
+      el.classList.contains("window") &&
       /Installed ✓/.test(el.querySelector('.cat-row[data-app="stronglifts"]')?.textContent || "") &&
       !!el.querySelector('.cat-row[data-app="whiteboard"] button')));
-  await page.click('#catalog-list .cat-row[data-app="whiteboard"] button');
+  check("…and the settings panel no longer carries it",
+    (await page.$("#panelbg .catalog-list")) === null);
+  await page.click('.libwin .cat-row[data-app="whiteboard"] button');
   await page.waitForSelector('.appicon[data-id="whiteboard"]', { timeout: 15000 });
   check("installing from the library lands the app on the home screen, live", true);
-  await page.click("#panelclose");
+  await page.$eval(".libwin .close", (b) => (b as HTMLElement).click());
 
   check("chat windows are resizable like windows", (await page.$eval(".chatwin", (e) => getComputedStyle(e).resize)) === "both");
 

@@ -407,18 +407,33 @@
   .setting-section .msg { font-size:0.82rem; min-height:1.1em; }
   .setting-section .msg.ok { color:#8fd0a0; }
   .setting-section .msg.err { color:#f0a0a0; }
-  #catalog-list .cat-row { display:flex; align-items:center; gap:0.6rem; padding:0.45rem 0;
+  .catalog-list .cat-row { display:flex; align-items:center; gap:0.6rem; padding:0.45rem 0;
     border-bottom:1px solid var(--line); }
-  #catalog-list .cat-row:last-child { border-bottom:none; }
-  #catalog-list .cat-icon { font-size:1.3rem; flex:none; }
-  #catalog-list .cat-info { flex:1; min-width:0; }
-  #catalog-list .cat-name { font-size:0.86rem; color:#c9c9d4; }
-  #catalog-list .cat-desc { font-size:0.74rem; color:var(--dim); overflow:hidden;
+  .catalog-list .cat-row:last-child { border-bottom:none; }
+  .catalog-list .cat-icon { font-size:1.3rem; flex:none; }
+  .catalog-list .cat-info { flex:1; min-width:0; }
+  .catalog-list .cat-name { font-size:0.86rem; color:#c9c9d4; }
+  .catalog-list .cat-desc { font-size:0.74rem; color:var(--dim); overflow:hidden;
     text-overflow:ellipsis; white-space:nowrap; }
-  #catalog-list .cat-state { font-size:0.75rem; color:#8fd0a0; flex:none; }
-  #catalog-list .cat-actions { display:flex; gap:0.35rem; flex:none; }
-  #catalog-list button { font-size:0.75rem; padding:0.25rem 0.6rem; }
-  #catalog-list button:disabled { opacity:0.5; cursor:default; }
+  .catalog-list .cat-state { font-size:0.75rem; color:#8fd0a0; flex:none; }
+  .catalog-list .cat-actions { display:flex; gap:0.35rem; flex:none; }
+  .catalog-list button { font-size:0.75rem; padding:0.25rem 0.6rem; }
+  .catalog-list button:disabled { opacity:0.5; cursor:default; }
+  /* the library: a desk window (desktop) / fullscreen sheet (mobile) */
+  .libwin .libbody { flex:1; overflow-y:auto; padding:0.6rem 0.85rem; }
+  .libwin .libbody .hint { font-size:0.76rem; color:var(--dim); margin:0 0 0.5rem; }
+  .libwin .libbody .msg { font-size:0.8rem; min-height:1.1em; margin-top:0.4rem; }
+  .libwin .libbody .msg.ok { color:#8fd0a0; }
+  .libwin .libbody .msg.err { color:#f0a0a0; }
+  .library-tile .glyph { opacity:0.75; border:1px dashed var(--line); border-radius:16px; }
+  #librarybg { position:fixed; inset:0; z-index:80; background:rgba(0,0,0,0.55); padding:1rem;
+    display:none; align-items:flex-start; justify-content:center; overflow-y:auto; }
+  #librarybg.open { display:flex; }
+  #library-panel { background:#15151c; border:1px solid var(--line); border-radius:14px;
+    max-width:30rem; width:100%; padding:0.9rem 1.1rem; margin-top:2rem; }
+  #library-panel header { display:flex; align-items:center; justify-content:space-between; }
+  #library-panel .hint { font-size:0.76rem; color:var(--dim); }
+  #library-panel .msg { font-size:0.8rem; min-height:1.1em; }
   #sys-build a { color:#c9c9d4; }
   #sys-build .sys-rev { font-family:ui-monospace, monospace; }
   #sys-build .sys-badge.ok { color:#8fd0a0; }
@@ -516,6 +531,16 @@
     <header><span>Notifications</span><button id="tray-clear">Clear</button></header>
     <div id="tray-list"></div>
   </div>
+  <div id="librarybg">
+    <div id="library-panel">
+      <header><b>📦 App library</b><button id="libraryclose" title="Close">✕</button></header>
+      <p class="hint">Apps that ship with liquid. Installing copies one into your workspace —
+      it becomes yours to evolve; updates merge on top of your changes.</p>
+      <div id="library-list" class="catalog-list"></div>
+      <div class="msg" id="library-msg"></div>
+    </div>
+  </div>
+
   <div id="panelbg">
     <div id="panel">
       <header><b>Settings</b><button id="panelclose" title="Close">✕</button></header>
@@ -535,13 +560,9 @@
       </div>
       <div class="setting-section">
         <h3>Agent</h3>
-        <p class="hint">Which model liquid uses to build and reason. “Default” follows your Claude plan; the change applies to your next message.</p>
-        <select id="model-select">
-          <option value="default">Default (your plan’s choice)</option>
-          <option value="opus">Opus — most capable</option>
-          <option value="sonnet">Sonnet — balanced</option>
-          <option value="haiku">Haiku — fastest</option>
-        </select>
+        <p class="hint">The DEFAULT model for every chat. A chat window’s own picker overrides
+        it for that conversation only — this is the fallback everything else inherits.</p>
+        <select id="model-select"></select><!-- populated from /api/settings: ONE list, same as chat pickers -->
         <div class="msg" id="model-msg"></div>
       </div>
       <div class="setting-section">
@@ -554,15 +575,6 @@
           <button type="submit">Change password</button>
           <div class="msg" id="pw-msg"></div>
         </form>
-      </div>
-      <div class="setting-section">
-        <h3>App library</h3>
-        <p class="hint">Apps that ship with liquid. Installing copies one into your workspace
-        — it becomes yours to evolve. When the library ships a newer version, update merges
-        it on top of your changes (git three-way; conflicts wait for you), or replace starts
-        fresh from the library copy.</p>
-        <div id="catalog-list"></div>
-        <div class="msg" id="catalog-msg"></div>
       </div>
       <div class="setting-section">
         <h3>System</h3>

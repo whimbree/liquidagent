@@ -315,6 +315,13 @@ function makeFolderIcon(fid) {
 function renderGrid() {
   const grid = $("grid"); grid.innerHTML = "";
   for (const item of orderedItems()) grid.appendChild(item.kind === "app" ? makeAppIcon(/** @type {App} */(apps.find(a => a.id === item.id))) : makeFolderIcon(item.id));
+  // The library is always one tile away — apps that ship with liquid.
+  const lib = document.createElement("div");
+  lib.className = "appicon library-tile";
+  lib.innerHTML = `<div class="glyph">📦</div><div class="label">App library</div>`;
+  lib.title = "Apps that ship with liquid — install, update, replace";
+  lib.onclick = () => openLibrary();
+  grid.appendChild(lib);
   $("empty").hidden = apps.length > 0;
 }
 
@@ -758,8 +765,8 @@ function renderDock() {
     if (app) add(win, app.icon, app.name);
   }
   for (const w of chatWins.values()) add(w.el, "💬", w.title.textContent || "Chat");
-  for (const win of imgWins) add(win, "🖼", win.dataset.label || "Image");
-  dock.classList.toggle("visible", openWindows.size + chatWins.size + imgWins.size > 0);
+  for (const win of utilWins) add(win, win.dataset.icon || "🖼", win.dataset.label || "Window");
+  dock.classList.toggle("visible", openWindows.size + chatWins.size + utilWins.size > 0);
 }
 
 /* ---------- window switcher / tiling / tidy ---------- */
@@ -768,7 +775,7 @@ function allWindows() {
   const list = [];
   for (const [id, win] of openWindows) { const app = apps.find(a => a.id === id); if (app) list.push({ el: win, icon: app.icon, label: app.name }); }
   for (const w of chatWins.values()) list.push({ el: w.el, icon: "💬", label: w.title.textContent || "Chat" });
-  for (const win of imgWins) list.push({ el: win, icon: "🖼", label: win.dataset.label || "Image" });
+  for (const win of utilWins) list.push({ el: win, icon: win.dataset.icon || "🖼", label: win.dataset.label || "Window" });
   return list.sort((a, b) => (parseInt(b.el.style.zIndex) || 0) - (parseInt(a.el.style.zIndex) || 0));
 }
 /** @type {{items:SwitcherItem[],sel:number}|null} */
@@ -848,6 +855,7 @@ function paletteItems(q) {
   const items = [];
   for (const a of apps) items.push({ icon: a.icon, label: `Open ${a.name}`, run: () => openApp(a.id, true) });
   items.push({ icon: "💬", label: "New chat window", run: () => isMobile() ? newConversation() : openChatWindow(null) });
+  items.push({ icon: "📦", label: "Open app library", run: () => openLibrary() });
   items.push({ icon: "🪟", label: "Tidy windows", run: () => tidyWindows() });
   items.push({ icon: "⚙", label: "Open settings", run: () => { $("panelbg").classList.add("open"); loadSettings(); } });
   items.push({ icon: "🔔", label: "Show notifications", run: () => $("tray-btn").click() });
@@ -1427,16 +1435,40 @@ async function loadConversations() {
 let modelChoices = [];
 /** @type {string | null} model chosen for a not-yet-created chat */
 let pendingModel = null;
+/** The global default model id (Settings → Agent) — per-chat pickers show
+ *  what "Default" resolves to, so the hierarchy is legible. */
+let globalModel = "default";
 async function ensureModelChoices() {
   if (modelChoices.length === 0) {
-    try { modelChoices = (await (await api("/api/settings")).json()).models || []; } catch { modelChoices = []; }
+    try {
+      const s = await (await api("/api/settings")).json();
+      modelChoices = s.models || [];
+      globalModel = s.model || "default";
+    } catch { modelChoices = []; }
   }
   return modelChoices;
 }
 /** @param {HTMLSelectElement} sel */
 function fillModelSelect(sel) {
   sel.innerHTML = "";
-  for (const m of modelChoices) { const o = document.createElement("option"); o.value = m.id; o.textContent = m.label; sel.append(o); }
+  for (const m of modelChoices) {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = m.id === "default" ? `Default (${globalDefaultLabel()})` : m.label;
+    sel.append(o);
+  }
+}
+function globalDefaultLabel() {
+  if (globalModel === "default") return "your plan’s choice";
+  return modelChoices.find((m) => m.id === globalModel)?.label ?? globalModel;
+}
+/** Settings changed the global default → per-chat pickers relabel. */
+function refreshModelSelects() {
+  for (const sel of document.querySelectorAll("select.wmodel, select#modelpick")) {
+    const v = /** @type {HTMLSelectElement} */ (sel).value;
+    fillModelSelect(/** @type {HTMLSelectElement} */ (sel));
+    /** @type {HTMLSelectElement} */ (sel).value = v;
+  }
 }
 async function loadModelChoices() {
   await ensureModelChoices();
@@ -1847,7 +1879,7 @@ function attachmentThumbs(items) {
   return wrap;
 }
 /** Open image-preview windows, so the dock and switcher can list them. */
-const imgWins = new Set();
+const utilWins = new Set();
 /** Preview an image in a real desk window — the same .window/WM machinery as
  *  apps and chats (drag, edge snaps, dblclick-maximize, focus/z-order, CSS
  *  resize, the dock), not a bespoke overlay. Not in the saved layout.
@@ -1856,6 +1888,7 @@ function openImageWindow(src, name) {
   const win = document.createElement("div");
   win.className = "window imgwin";
   win.dataset.label = name || "Image";
+  win.dataset.icon = "🖼";
   const w = Math.min(560, innerWidth - 32), h = Math.min(460, innerHeight - 32);
   win.style.width = w + "px"; win.style.height = h + "px";
   win.style.left = Math.max(8, (innerWidth - w) / 2) + "px";
@@ -1868,11 +1901,11 @@ function openImageWindow(src, name) {
   /** @type {HTMLElement} */ (win.querySelector(".tname")).textContent = name || "Image";
   /** @type {HTMLImageElement} */ (win.querySelector(".imgwrap img")).src = src;
   /** @type {HTMLElement} */ (win.querySelector(".full")).onclick = () => window.open(src, "_blank");
-  /** @type {HTMLElement} */ (win.querySelector(".close")).onclick = () => { win.remove(); imgWins.delete(win); renderDock(); };
+  /** @type {HTMLElement} */ (win.querySelector(".close")).onclick = () => { win.remove(); utilWins.delete(win); renderDock(); };
   win.addEventListener("pointerdown", () => bringToFront(win));
   document.body.append(win);
   enableWinDrag(win);
-  imgWins.add(win);
+  utilWins.add(win);
   bringToFront(win);
   renderDock();
   return win;
@@ -1992,20 +2025,76 @@ async function loadSettings() {
   const m = $("model-msg"); m.textContent = ""; m.className = "msg";
   initAppearanceControls();
   loadBuildInfo();
-  loadCatalog();
   try {
+    // One model list everywhere: the settings picker (the DEFAULT) and the
+    // per-chat pickers (overrides) render from the same server-provided set.
     const s = await (await api("/api/settings")).json();
-    $in("model-select").value = s.model || "default";
+    modelChoices = s.models || modelChoices;
+    globalModel = s.model || "default";
+    const sel = $in("model-select");
+    sel.innerHTML = "";
+    for (const choice of modelChoices) {
+      const o = document.createElement("option");
+      o.value = choice.id;
+      o.textContent = choice.label;
+      sel.append(o);
+    }
+    sel.value = globalModel;
+    refreshModelSelects();
   } catch {}
 }
 
 /** @typedef {{id:string,name:string,icon:string,description:string,runtime?:string,runtime_available:boolean,installed:boolean,live:boolean,update_available:boolean,local_changes:boolean}} CatalogEntry */
 
+/** The library gets its own surface — a desk window (a WM citizen like any
+ *  other) on desktop, a fullscreen sheet on mobile — NOT a settings section.
+ *  @type {HTMLElement | null} */
+let libWin = null;
+function openLibrary() {
+  if (isMobile()) {
+    $("librarybg").classList.add("open");
+    renderLibrary($("library-list"), $("library-msg"));
+    return;
+  }
+  if (libWin && document.body.contains(libWin)) { bringToFront(libWin); return; }
+  const win = document.createElement("div");
+  win.className = "window libwin";
+  win.dataset.label = "App library";
+  win.dataset.icon = "📦";
+  const w = Math.min(460, innerWidth - 32), h = Math.min(520, innerHeight - 32);
+  win.style.cssText = `left:${Math.max(8, (innerWidth - w) / 2)}px; top:${Math.max(8, (innerHeight - h) / 3)}px; width:${w}px; height:${h}px;`;
+  win.innerHTML = `
+    <div class="titlebar"><span class="ticon">📦</span><span class="tname">App library</span>
+      <button class="close" title="Close">✕</button></div>
+    <div class="libbody">
+      <p class="hint">Apps that ship with liquid. Installing copies one into your workspace —
+      it becomes yours to evolve. When the library ships a newer version, update merges it
+      on top of your changes (git three-way; conflicts wait for you), or replace starts
+      fresh from the library copy.</p>
+      <div class="catalog-list"></div>
+      <div class="msg"></div>
+    </div>`;
+  /** @type {HTMLElement} */ (win.querySelector(".close")).onclick = () => {
+    win.remove(); utilWins.delete(win); if (libWin === win) libWin = null; renderDock();
+  };
+  win.addEventListener("pointerdown", () => bringToFront(win));
+  document.body.append(win);
+  enableWinDrag(win);
+  utilWins.add(win);
+  libWin = win;
+  bringToFront(win);
+  renderDock();
+  renderLibrary(
+    /** @type {HTMLElement} */ (win.querySelector(".catalog-list")),
+    /** @type {HTMLElement} */ (win.querySelector(".msg"))
+  );
+}
+
 /** The built-in app library: install any time; updates are git merges of the
- *  new library version onto your evolved copy (or a clean replace). */
-async function loadCatalog() {
-  const list = $("catalog-list");
-  const msg = $("catalog-msg");
+ *  new library version onto your evolved copy (or a clean replace).
+ *  Renders into any container — the desk window or the mobile sheet.
+ *  @param {HTMLElement} list @param {HTMLElement} msg */
+async function renderLibrary(list, msg) {
   msg.textContent = ""; msg.className = "msg";
   try {
     /** @type {CatalogEntry[]} */
@@ -2034,7 +2123,7 @@ async function loadCatalog() {
             if (r.ok) { msg.className = "msg ok"; msg.textContent = `${app.name}: done.`; }
             else { msg.className = "msg err"; msg.textContent = body?.error || `${label} failed (${r.status})`; }
           } catch { msg.className = "msg err"; msg.textContent = `${label} failed.`; }
-          loadCatalog();
+          renderLibrary(list, msg);
         };
         return b;
       };
@@ -2159,7 +2248,12 @@ $("model-select").onchange = async () => {
   const m = $("model-msg"); m.className = "msg"; m.textContent = "Saving…";
   try {
     const r = await api("/api/settings", { method:"PUT", body: JSON.stringify({ model: $in("model-select").value }) });
-    if (r.ok) { m.className = "msg ok"; m.textContent = "Saved."; }
+    if (r.ok) {
+      m.className = "msg ok"; m.textContent = "Saved.";
+      // per-chat pickers show what "Default" now resolves to
+      globalModel = $in("model-select").value;
+      refreshModelSelects();
+    }
     else { m.className = "msg err"; m.textContent = "Could not save."; }
   } catch { m.className = "msg err"; m.textContent = "Could not save."; }
 };
@@ -2170,6 +2264,8 @@ function closeSettings() {
   const mm = $("model-msg"); mm.textContent = ""; mm.className = "msg";
 }
 $("settingsbtn").onclick = () => { $("panelbg").classList.add("open"); loadSettings(); };
+$("libraryclose").onclick = () => $("librarybg").classList.remove("open");
+$("librarybg").onclick = (e) => { if (e.target === $("librarybg")) $("librarybg").classList.remove("open"); };
 $("panelclose").onclick = closeSettings;
 $("panelbg").onclick = (e) => { if (e.target === $("panelbg")) closeSettings(); };
 $("pw-form").onsubmit = async (e) => {
