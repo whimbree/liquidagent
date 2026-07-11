@@ -181,6 +181,32 @@ try {
     check("…and it deploys (the customization is gone, history keeps it)", true);
     check("…after which the copy reads current again",
       (await cat()).some((a) => a.id === "stronglifts" && a.installed && !a.local_changes));
+
+    // The production incident, reproduced: app files land in the workspace
+    // UNCOMMITTED (an agent fetch that never committed) → "installed but not
+    // live". Replace must rescue-snapshot the junk (uncommitted files aren't
+    // in history!) and then deploy the pristine copy — not refuse.
+    rmSync(join(WS, "apps", "stronglifts"), { recursive: true, force: true });
+    git("add -A"); git('commit -q -m "remove stronglifts"');
+    await nudge(token);
+    await until("removal deployed", async () => (await j("/api/pipeline", {}, token)).body?.status?.state === "clean");
+    mkdirSync(join(WS, "apps", "stronglifts"), { recursive: true });
+    writeFileSync(join(WS, "apps", "stronglifts", "app.json"), JSON.stringify({ name: "Half Fetched" }));
+    writeFileSync(join(WS, "apps", "stronglifts", "index.html"), "<h1>partial</h1>"); // NOT committed
+    check("uncommitted files read installed-but-not-live",
+      (await cat()).some((a) => a.id === "stronglifts" && a.installed && !a.live));
+    check("replace rescues the uncommitted state and deploys",
+      (await j("/api/catalog/stronglifts/update", { method: "POST", body: JSON.stringify({ mode: "replace" }) }, token)).status === 200);
+    await until("stronglifts live again", async () => (await app("/app/stronglifts/")).status === 200);
+    check("…the app is live again", (await cat()).some((a) => a.id === "stronglifts" && a.live));
+    check("…and the rescue snapshot is in history",
+      git("log --oneline -3 -- apps/stronglifts").includes("Snapshot uncommitted"));
+    check("merge still refuses a dirty tree", await (async () => {
+      writeFileSync(join(WS, "apps", "stronglifts", "index.html"), "<h1>dirty again</h1>");
+      const r = await j("/api/catalog/stronglifts/update", { method: "POST", body: JSON.stringify({ mode: "merge" }) }, token);
+      git("checkout -- apps/stronglifts"); // clean up for later sections
+      return r.status === 409;
+    })());
   }
 
   // --- polyglot backends (ADR 0002): a DECLARED runner, not the bun default ---

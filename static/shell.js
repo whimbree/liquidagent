@@ -2196,13 +2196,18 @@ async function renderLibrary(list, msg) {
         b.onclick = async () => {
           if (confirm_ && !confirm(confirm_)) return;
           b.disabled = true; msg.className = "msg"; msg.textContent = `${label}ing ${app.name}…`;
+          let cls = "msg err", text = `${label} failed.`;
           try {
             const r = await call();
             const body = await r.json().catch(() => null);
-            if (r.ok) { msg.className = "msg ok"; msg.textContent = `${app.name}: done.`; }
-            else { msg.className = "msg err"; msg.textContent = body?.error || `${label} failed (${r.status})`; }
-          } catch { msg.className = "msg err"; msg.textContent = `${label} failed.`; }
-          renderLibrary(list, msg);
+            if (r.ok) { cls = "msg ok"; text = `${app.name}: done.`; }
+            else text = body?.error || `${label} failed (${r.status})`;
+          } catch { /* keep the generic failure text */ }
+          // Refresh the rows FIRST — renderLibrary resets the message line, so
+          // setting the outcome after keeps errors readable instead of
+          // flashing for one frame ("the button does nothing").
+          await renderLibrary(list, msg);
+          msg.className = cls; msg.textContent = text;
         };
         return b;
       };

@@ -486,16 +486,38 @@ pub async fn update(
     let dirty = git_stdout(&state.workspace_dir, &["status", "--porcelain", "--", &format!("apps/{app}")])
         .map(|out| !out.trim().is_empty())
         .unwrap_or(true);
-    if dirty {
+    // Merging onto a dirty tree loses work — merge refuses. Replace is the
+    // opposite: clobbering the current copy is the POINT — but uncommitted
+    // files aren't in git history, so snapshot them first or "history keeps
+    // your fork" would be a lie (this also unsticks apps whose files landed
+    // without ever being committed — they read "installed but not live").
+    if dirty && body.mode == UpdateMode::Merge {
         return (
             StatusCode::CONFLICT,
-            Json(json!({ "error": "the app has uncommitted changes — ask liquid to commit or discard them first" })),
+            Json(json!({ "error": "the app has uncommitted changes — ask liquid to commit or discard them first, or use replace" })),
         )
             .into_response();
     }
 
     match body.mode {
         UpdateMode::Replace => {
+            if dirty {
+                let pathspec = format!("apps/{app}");
+                let rescued = git(&state.workspace_dir, &["add", "--", &pathspec]).and_then(|()| {
+                    git(
+                        &state.workspace_dir,
+                        &["commit", "--quiet", "-m", &format!("Snapshot uncommitted {app} state before replacing it"), "--", &pathspec],
+                    )
+                });
+                if let Err(err) = rescued {
+                    warn!("catalog replace of {app}: rescue commit failed: {err:#}");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(json!({ "error": format!("could not snapshot the current state first: {err:#}") })),
+                    )
+                        .into_response();
+                }
+            }
             if let Err(err) = std::fs::remove_dir_all(&app_dir) {
                 warn!("catalog replace of {app}: clearing failed: {err:#}");
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();

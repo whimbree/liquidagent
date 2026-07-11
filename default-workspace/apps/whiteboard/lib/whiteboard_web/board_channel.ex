@@ -17,7 +17,7 @@ defmodule WhiteboardWeb.BoardChannel do
   def join("board:" <> board, params, socket) do
     user = params |> Map.get("user", "") |> to_string() |> String.slice(0, 32)
     user = if user == "", do: random_id(), else: user
-    color = Enum.at(@colors, :erlang.phash2(user, length(@colors)))
+    color = pick_color("board:" <> board, user)
 
     socket =
       socket
@@ -70,6 +70,18 @@ defmodule WhiteboardWeb.BoardChannel do
     Strokes.clear(socket.assigns.board)
     broadcast!(socket, "clear", %{"user" => socket.assigns.user})
     {:noreply, socket}
+  end
+
+  # First color nobody present is using — small groups always get distinct
+  # colors (a hash of random ids collides 1-in-8 with just two artists).
+  # Falls back to the hash when every color is taken.
+  defp pick_color(topic, user) do
+    used =
+      Presence.list(topic)
+      |> Enum.flat_map(fn {_id, %{metas: metas}} -> Enum.map(metas, & &1.color) end)
+
+    Enum.find(@colors, &(&1 not in used)) ||
+      Enum.at(@colors, :erlang.phash2(user, length(@colors)))
   end
 
   defp normalize_width(w) when is_number(w), do: w |> max(1) |> min(24)
