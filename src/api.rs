@@ -204,6 +204,15 @@ pub async fn require_auth(
     let token = header_token.or(query.token.as_deref());
     match token {
         Some(token) if auth::validate_token(&state.db, token) => next.run(request).await,
+        // The per-boot screenshot capability doubles as a bearer so the
+        // agent's headless chromium can render the SHELL itself (screenshot
+        // app: "shell") — the shell needs /api/apps and the WS to draw. No
+        // new trust in practice: the harness holds the secret already, runs
+        // as the same unix user as the supervisor (the honest Phase 0/1
+        // limitation), and could read the database file directly.
+        Some(token) if !state.internal_secret.is_empty() && token == state.internal_secret => {
+            next.run(request).await
+        }
         _ => (
             StatusCode::UNAUTHORIZED,
             Json(json!({ "error": "unauthorized" })),

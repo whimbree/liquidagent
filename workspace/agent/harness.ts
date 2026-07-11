@@ -82,14 +82,17 @@ const shellServer = createSdkMcpServer({
     ),
     tool(
       "screenshot",
-      "See one of your apps as it actually renders in a real browser. Use this " +
-        "after building or changing an app to check its layout/visuals, to debug " +
-        "a rendering bug you can't diagnose from the code alone, or whenever your " +
-        "human asks to see a screenshot. Returns a PNG you can see — and it also " +
-        "appears in your human's chat, so calling this IS how you show them a " +
-        "screenshot. Defaults to a phone-sized viewport (390×780).",
+      "See one of your apps — or the liquid shell itself — as it actually renders " +
+        "in a real browser. Use this after building or changing an app to check its " +
+        "layout/visuals, to debug a rendering bug you can't diagnose from the code " +
+        "alone, or whenever your human asks to see a screenshot. Returns a PNG you " +
+        "can see — and it also appears in your human's chat, so calling this IS how " +
+        "you show them a screenshot. Defaults to a phone-sized viewport (390×780).",
       {
-        app: z.string().describe("The app id — its directory name under apps/"),
+        app: z.string().describe(
+          'The app id — its directory name under apps/ — or "shell" for the liquid ' +
+          "home screen itself (the app grid; not your human's live windows, which " +
+          "exist only on their device)"),
         path: z.string().optional().describe("Route within the app, e.g. \"\" or \"index.html\""),
         width: z.number().optional().describe("Viewport width in px (default 390, a phone)"),
         height: z.number().optional().describe("Viewport height in px (default 780)"),

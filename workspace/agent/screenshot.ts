@@ -7,7 +7,8 @@ import { unlink } from "node:fs/promises";
 
 export type ShotResult = { ok: true; data: string } | { ok: false; error: string };
 
-/** Capture `/app/<app>/<path>` off the local supervisor as a base64 PNG. */
+/** Capture `/app/<app>/<path>` — or, for app "shell", the whole liquid home
+ *  screen — off the local supervisor as a base64 PNG. */
 export async function captureAppScreenshot(
   app: string,
   path: string,
@@ -18,10 +19,14 @@ export async function captureAppScreenshot(
     Bun.env.LIQUID_CHROME ?? Bun.which("chromium") ?? Bun.which("chromium-browser") ?? Bun.which("google-chrome-stable");
   if (!chrome) return { ok: false, error: "no chromium available (set LIQUID_CHROME on the host)" };
   const port = Bun.env.LIQUID_PORT ?? "3000";
-  let url = `http://127.0.0.1:${port}/app/${encodeURIComponent(app)}/${path.replace(/^\/+/, "")}`;
-  // Present the screenshot capability so PRIVATE apps render. The initial
-  // navigation carries it in the query; the supervisor echoes it as a
-  // path-scoped cookie so chromium's subresource requests are authorized too.
+  const isShell = app === "shell";
+  let url = isShell
+    ? `http://127.0.0.1:${port}/`
+    : `http://127.0.0.1:${port}/app/${encodeURIComponent(app)}/${path.replace(/^\/+/, "")}`;
+  // Present the screenshot capability so PRIVATE apps render — and, for the
+  // shell, so the page can act as a logged-in owner for this one load. Apps
+  // get it echoed back as a path-scoped cookie for subresources; the shell
+  // reads it from the query and uses it as its bearer.
   const secret = Bun.env.LIQUID_INTERNAL_SECRET;
   if (secret) url += `${url.includes("?") ? "&" : "?"}__lshot=${encodeURIComponent(secret)}`;
   const out = `${tmpdir()}/liquid-shot-${crypto.randomUUID()}.png`;
@@ -31,7 +36,9 @@ export async function captureAppScreenshot(
         // VMs often have a tiny /dev/shm; without this chromium crashes there.
         "--disable-dev-shm-usage",
         "--force-device-scale-factor=1", `--window-size=${width},${height}`,
-        "--virtual-time-budget=3000", "--run-all-compositor-stages-before-draw",
+        // The shell boots a full client (auth probe, apps fetch, WS) — give
+        // it a longer virtual-time budget than a static app page.
+        `--virtual-time-budget=${isShell ? 6000 : 3000}`, "--run-all-compositor-stages-before-draw",
         `--screenshot=${out}`, url],
       { stdout: "ignore", stderr: "pipe" },
     );

@@ -48,7 +48,11 @@ function renderMarkdown(src){
 }
 
 /* ---------- auth ---------- */
-let token = localStorage.getItem("liquid_token");
+// Screenshot mode: the agent's headless chromium loads "/" with the per-boot
+// capability in the query; it acts as THIS page load's bearer (never stored),
+// so the screenshot tool can render the shell itself.
+const shotToken = new URLSearchParams(location.search).get("__lshot");
+let token = shotToken ?? localStorage.getItem("liquid_token");
 /** @param {string} path @param {RequestInit} [options] */
 async function api(path, options = {}) {
   const headers = /** @type {Record<string,string>} */ (Object.assign({ "Content-Type": "application/json" }, options.headers));
@@ -67,7 +71,8 @@ async function boot() {
       // (Re)mint the HttpOnly session cookie before any app iframe loads —
       // private apps authenticate by cookie (iframes can't attach headers).
       // Login responses set it too; this covers sessions from before it existed.
-      await fetch("/api/auth/cookie", { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
+      // (Not in screenshot mode: the capability has no DB session to bind.)
+      if (!shotToken) await fetch("/api/auth/cookie", { method: "POST", headers: { Authorization: `Bearer ${token}` } }).catch(() => {});
       enterShell((await probe.json()).apps); return;
     }
     token = null; localStorage.removeItem("liquid_token");

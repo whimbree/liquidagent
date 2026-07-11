@@ -135,6 +135,12 @@ try {
   ok("the agent screenshot tool captures the app as a PNG",
     shot.ok && Buffer.from(shot.data, "base64").length > 1000 && Buffer.from(shot.data, "base64")[0] === 0x89);
 
+  // …and the whole liquid shell: the capability doubles as the page's bearer,
+  // so the headless browser renders the real home screen (grid, dock, chrome).
+  const shellShot = await captureAppScreenshot("shell", "", 1024, 768);
+  ok("…and the liquid shell itself (home screen)",
+    shellShot.ok && Buffer.from(shellShot.data, "base64").length > 5000 && Buffer.from(shellShot.data, "base64")[0] === 0x89);
+
   ok("no page errors", errs.length === 0);
   if (errs.length) console.log("  errors:", errs.slice(0, 5));
 } finally {

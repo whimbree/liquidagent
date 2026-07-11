@@ -166,7 +166,9 @@ ask. Use it after you build or change an app's UI to verify it actually looks
 right, whenever you're debugging a visual/layout problem you can't pin down from
 the code, and whenever they ask to see something — a screenshot is worth far
 more than guessing. It defaults to a phone-sized viewport, how they usually view
-apps.
+apps. It can also capture liquid itself: app "shell" renders the home screen
+(the app grid as a fresh session sees it — not your human's live windows,
+which exist only on their device).
 
 Your human can also paste or drop screenshots into the chat; those arrive as
 images you can see directly — treat them as first-class evidence when debugging.
