@@ -198,6 +198,12 @@ in
         LIQUID_CHROME = "${cfg.chromiumPackage}/bin/chromium";
       } // lib.optionalAttrs (sourceRepo != null) {
         LIQUID_SOURCE_REPO = sourceRepo;
+      } // {
+        # The liquidagent revision this UNIT was rendered from. The in-guest
+        # self-updater refreshes the binary but never the systemd unit — this
+        # is how the shell can show "binary fresh, system layer stale" instead
+        # of a misleading ✓ (the unit needs a guest rebuild, e.g. microvm -uR).
+        LIQUID_MODULE_REV = self.rev or self.dirtyRev or "unknown";
       };
 
       serviceConfig = {

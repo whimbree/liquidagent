@@ -1789,58 +1789,85 @@ async function loadSettings() {
   } catch {}
 }
 
-/** System panel: the platform commit this build runs, linked to GitHub, with
- *  an is-latest check against the repo's HEAD (best-effort — offline or
- *  rate-limited just means no verdict, never an error). */
+/** System panel: which platform commits are actually running, linked to
+ *  GitHub, each with an is-latest check against the repo's HEAD (best-effort —
+ *  offline or rate-limited just means no verdict, never an error). Two layers,
+ *  because they update by different mechanisms and genuinely diverge:
+ *  the BINARY (in-place self-update, minutes) and the SYSTEM layer — the
+ *  rendered systemd unit: seccomp/PATH/env — which only a guest rebuild
+ *  (e.g. `microvm -uR`) refreshes. */
 async function loadBuildInfo() {
   const el = $("sys-build");
   el.textContent = "";
-  try {
-    const h = await (await fetch("/api/health")).json();
-    const raw = typeof h.build?.rev === "string" ? h.build.rev : "unknown";
-    const repo = typeof h.build?.repo === "string" ? h.build.repo : null;
-    // Nix injects "<sha>" for clean builds, "<sha>-dirty" for local ones.
+  /** Nix injects "<sha>" for clean builds, "<sha>-dirty" for local ones.
+   *  @param {string} raw @returns {{rev:string,isSha:boolean,short:string}} */
+  const parseRev = (raw) => {
     const m = raw.match(/^([0-9a-f]{7,40})(-dirty)?$/);
     const rev = m ? /** @type {string} */ (m[1]) : raw;
-    const isSha = !!m && !m[2]; // a dirty build isn't any published commit — don't link/compare
-    const short = m ? rev.slice(0, 7) + (m[2] ? " (dirty)" : "") : raw;
-    el.append("Running commit ");
-    if (isSha && repo) {
-      const a = document.createElement("a");
-      a.className = "sys-rev";
-      a.href = `https://github.com/${repo}/commit/${rev}`;
-      a.target = "_blank"; a.rel = "noreferrer";
-      a.textContent = short;
-      el.append(a);
-    } else {
-      const s = document.createElement("span");
-      s.className = "sys-rev";
-      s.textContent = short;
-      el.append(s);
-    }
-    const badge = document.createElement("span");
-    badge.className = "sys-badge";
-    el.append(" — ", badge);
-    if (!isSha || !repo) { badge.textContent = "development build"; return; }
-    badge.textContent = "checking for updates…";
-    try {
-      const r = await fetch(`https://api.github.com/repos/${repo}/commits?per_page=1`);
-      if (!r.ok) throw new Error(String(r.status));
-      const latest = (await r.json())?.[0]?.sha;
-      if (typeof latest !== "string") throw new Error("no sha");
-      if (latest.startsWith(rev) || rev.startsWith(latest)) {
+    // a dirty build isn't any published commit — don't link/compare
+    return { rev, isSha: !!m && !m[2], short: m ? rev.slice(0, 7) + (m[2] ? " (dirty)" : "") : raw };
+  };
+  try {
+    const h = await (await fetch("/api/health")).json();
+    const repo = typeof h.build?.repo === "string" ? h.build.repo : null;
+    const binary = parseRev(typeof h.build?.rev === "string" ? h.build.rev : "unknown");
+    const module_ = typeof h.build?.module_rev === "string" ? parseRev(h.build.module_rev) : null;
+
+    // One HEAD lookup shared by both lines.
+    const latest = repo
+      ? await fetch(`https://api.github.com/repos/${repo}/commits?per_page=1`)
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+          .then((c) => (typeof c?.[0]?.sha === "string" ? /** @type {string} */ (c[0].sha) : null))
+          .catch(() => null)
+      : null;
+
+    /** @param {string} label @param {{rev:string,isSha:boolean,short:string}} v @param {string} [staleHint] */
+    const line = (label, v, staleHint) => {
+      const row = document.createElement("div");
+      row.append(`${label} `);
+      if (v.isSha && repo) {
+        const a = document.createElement("a");
+        a.className = "sys-rev";
+        a.href = `https://github.com/${repo}/commit/${v.rev}`;
+        a.target = "_blank"; a.rel = "noreferrer";
+        a.textContent = v.short;
+        row.append(a);
+      } else {
+        const s = document.createElement("span");
+        s.className = "sys-rev";
+        s.textContent = v.short;
+        row.append(s);
+      }
+      const badge = document.createElement("span");
+      badge.className = "sys-badge";
+      row.append(" — ", badge);
+      if (!v.isSha || !repo) badge.textContent = "development build";
+      else if (latest === null) badge.textContent = "couldn't check for updates";
+      else if (latest.startsWith(v.rev) || v.rev.startsWith(latest)) {
         badge.classList.add("ok");
         badge.textContent = "✓ up to date";
       } else {
         badge.classList.add("warn");
-        badge.textContent = "";
         const cmp = document.createElement("a");
-        cmp.href = `https://github.com/${repo}/compare/${rev.slice(0, 12)}...${latest.slice(0, 12)}`;
+        cmp.href = `https://github.com/${repo}/compare/${v.rev.slice(0, 12)}...${latest.slice(0, 12)}`;
         cmp.target = "_blank"; cmp.rel = "noreferrer";
         cmp.textContent = `⬆ update available (latest ${latest.slice(0, 7)})`;
         badge.append(cmp);
+        if (staleHint) {
+          const hint = document.createElement("div");
+          hint.className = "hint";
+          hint.textContent = staleHint;
+          row.append(hint);
+        }
       }
-    } catch { badge.textContent = "couldn't check for updates"; }
+      el.append(row);
+    };
+
+    line("Binary", binary);
+    if (module_) {
+      line("System layer", module_,
+        "the unit/config only refreshes with a guest rebuild (e.g. microvm -uR) — self-update can't reach it");
+    }
   } catch { el.textContent = "version unavailable"; }
 }
 $("model-select").onchange = async () => {

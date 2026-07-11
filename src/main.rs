@@ -461,13 +461,17 @@ async fn health(axum::extract::State(state): axum::extract::State<AppState>) -> 
     // "owner/repo" on GitHub, set by the NixOS module from its update flake —
     // lets the shell link the running commit and check for a newer one.
     let source_repo = std::env::var("LIQUID_SOURCE_REPO").ok();
+    // The revision the systemd unit was rendered from (module-set). Can lag
+    // the binary: self-update swaps the binary, only a guest rebuild
+    // re-renders the unit.
+    let module_rev = std::env::var("LIQUID_MODULE_REV").ok();
     Json(serde_json::json!({
         "status": "ok",
         "pipeline_mode": state.deploy.mode(),
         "pipeline_status": state.deploy.status(),
         "deployed_commit": deployed,
         "app_count": app_count,
-        "build": { "rev": BUILD_REV, "repo": source_repo },
+        "build": { "rev": BUILD_REV, "repo": source_repo, "module_rev": module_rev },
     }))
 }
 
