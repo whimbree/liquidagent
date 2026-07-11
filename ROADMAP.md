@@ -252,6 +252,12 @@ prompt are Claude-shaped. Generalize the seam.
   dashboard**; **import** a graduated app back, or install an external one
 - **Inter-app data** — a scoped, permissioned intent/shared-store bus so apps
   can compose
+- **Browser extension** (see `docs/ideas/browser-extension.md`) — liquid's
+  sensor inside the rest of the web: debug captures (tab pixels + console +
+  network), "make me one like this" design capture, a research clipper,
+  page-to-app extraction, eyes on authenticated pages. Deferred until a need
+  bites; the no-install capture paths (shell 📸 via getDisplayMedia, PWA
+  share_target, paste/drop) cover the screenshot flows today
 
 ---
 

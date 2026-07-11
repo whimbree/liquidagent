@@ -44,7 +44,15 @@ const PWA_MANIFEST: &str = r##"{
   "icons": [
     { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
     { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
-  ]
+  ],
+  "share_target": {
+    "action": "/share",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [{ "name": "images", "accept": ["image/png", "image/jpeg", "image/gif", "image/webp"] }]
+    }
+  }
 }"##;
 
 /// Workspace template, embedded so first-run init needs no runtime paths.

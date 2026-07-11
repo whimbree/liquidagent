@@ -134,6 +134,7 @@ async function enterShell(appList) {
   connect();
   initPush();
   initPipeline();
+  pickupSharedImages();
 }
 
 /* ---------- deploy pipeline ---------- */
@@ -1157,6 +1158,7 @@ async function openChatWindow(convId, pos, saved) {
       <input placeholder="Ask liquid…" autocomplete="off">
       <input class="wattachinput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
       <button type="button" class="wattach" title="Attach an image">📎</button>
+      <button type="button" class="wscreen" hidden title="Capture your screen (a tab, window, or the whole screen)">📸</button>
       <button type="button" class="stop" hidden title="Stop">⏹</button>
       <button type="submit" class="send">Send</button>
     </form>`;
@@ -1210,9 +1212,14 @@ async function openChatWindow(convId, pos, saved) {
       w.pendingModel = model === "default" ? null : model;
     }
   };
-  // Per-window image attachments: 📎, paste, thumbnails — like the docked chat.
+  // Per-window image attachments: 📎, paste, screen capture, thumbnails.
   const attachInput = /** @type {HTMLInputElement} */ (win.querySelector(".wattachinput"));
   /** @type {HTMLElement} */ (win.querySelector(".wattach")).onclick = () => attachInput.click();
+  const screenBtn = /** @type {HTMLButtonElement} */ (win.querySelector(".wscreen"));
+  if (canCaptureScreen()) {
+    screenBtn.hidden = false;
+    screenBtn.onclick = () => captureScreenToChat();
+  }
   attachInput.addEventListener("change", async () => {
     for (const f of attachInput.files ?? []) {
       try { const a = await fileToAttachment(f); if (a) w.atts.push(a); } catch {}
@@ -1872,6 +1879,73 @@ function renderAttachStrip() {
   });
 }
 function clearAttachments() { pendingAttachments = []; renderAttachStrip(); }
+
+/* ---- capture your screen: the user-side counterpart of the agent's
+   screenshot tool. One frame of whatever you choose to share (tab, window,
+   or screen — app iframes and your window arrangement included) lands in the
+   composer as an attachment. Desktop browsers only (iOS has no
+   getDisplayMedia); buttons stay hidden where unsupported. ---- */
+const canCaptureScreen = () => !!navigator.mediaDevices?.getDisplayMedia;
+async function captureScreenFrame() {
+  const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+  try {
+    const video = document.createElement("video");
+    video.srcObject = stream;
+    video.muted = true;
+    await video.play();
+    // Don't draw before the first frame exists — videoWidth is 0 until then
+    // and the capture would silently come out empty. Some sources never
+    // deliver frames; give up loudly rather than hang.
+    if (video.readyState < 2 || !video.videoWidth) {
+      await new Promise((res, rej) => {
+        const bail = setTimeout(() => rej(new Error("the capture produced no frames")), 4000);
+        video.onloadeddata = () => { clearTimeout(bail); res(undefined); };
+      });
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    /** @type {CanvasRenderingContext2D} */ (canvas.getContext("2d")).drawImage(video, 0, 0);
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/png"));
+    if (!(blob instanceof Blob)) return null;
+    return new File([blob], "screen-capture.png", { type: "image/png" });
+  } finally {
+    stream.getTracks().forEach((t) => t.stop());
+  }
+}
+async function captureScreenToChat() {
+  try {
+    const file = await captureScreenFrame();
+    if (file) await addAttachments([file]);
+  } catch (e) {
+    // NotAllowedError = the user dismissed the picker; anything else deserves
+    // a visible failure, not a button that silently does nothing.
+    if (!(e instanceof DOMException && e.name === "NotAllowedError")) toast("Screen capture failed");
+  }
+}
+
+// test hook: headless chromium auto-grants non-activated getDisplayMedia but
+// hangs on the user-activated picker path, so shell-smoke drives the capture
+// pipeline through here instead of the button.
+/** @type {any} */ (window).__captureScreenToChat = captureScreenToChat;
+
+/** Android share-target pickup: sw.js stashes images shared TO liquid in a
+ *  cache and redirects to /?shared=N — move them into the composer. */
+async function pickupSharedImages() {
+  const n = Number(new URLSearchParams(location.search).get("shared") || 0);
+  if (!n || !("caches" in window)) return;
+  history.replaceState(null, "", "/");
+  try {
+    const cache = await caches.open("liquid-shared-images");
+    /** @type {File[]} */ const files = [];
+    for (const req of await cache.keys()) {
+      const res = await cache.match(req);
+      if (res) files.push(new File([await res.blob()], "shared.png", { type: res.headers.get("Content-Type") || "image/png" }));
+      await cache.delete(req);
+    }
+    if (files.length) await addAttachments(files);
+  } catch { /* cache unavailable */ }
+}
 /** Thumbnail row for a rendered message. @param {{id?:string,mime?:string,url?:string}[]} items */
 function attachmentThumbs(items) {
   const wrap = document.createElement("div"); wrap.className = "athumbs";

@@ -40,7 +40,10 @@ const server = spawn("cargo", ["run", "--quiet"], {
   env: { ...process.env, LIQUID_FAKE_AGENT: "1", LIQUID_PORT: String(PORT), LIQUID_WORKSPACE_DIR: WS, LIQUID_DATA_DIR: join(root, "data") },
   stdio: ["ignore", "ignore", "inherit"],
 });
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1200,800"] });
+const browser = await puppeteer.launch({
+  executablePath: CHROME, headless: true,
+  args: ["--no-sandbox", "--disable-dev-shm-usage", "--window-size=1200,800"],
+});
 try {
   for (let i = 0; i < 220; i++) { try { if ((await fetch(BASE + "/api/health")).ok) break; } catch {} await sleep(400); }
   const page = await browser.newPage();
@@ -266,6 +269,49 @@ try {
   await page.waitForFunction(() => [...document.querySelectorAll(".appicon .label")].some((l) => /Board Deluxe/.test(l.textContent || "")), { timeout: 8000 });
   check("context-menu rename edits the manifest directly (no LLM) and the grid updates live", true);
 
+  // 📸 capture-your-screen: one frame of the (auto-selected) screen lands in
+  // the composer as an attachment — the user-side counterpart of the agent's
+  // screenshot tool.
+  check("the 📸 button is offered where the browser can capture",
+    await page.$eval(".chatwin .wscreen", (b) => !(b as HTMLButtonElement).hidden));
+  // Headless chromium's real screen capture hangs nondeterministically, so
+  // feed the product pipeline a synthetic display stream instead: everything
+  // of OURS (frame wait → canvas → PNG → attachment → strip) runs for real;
+  // only the browser's own picker/capture is substituted.
+  await page.evaluate(() => {
+    const c = document.createElement("canvas");
+    c.width = 320; c.height = 200;
+    const ctx = c.getContext("2d")!;
+    const paint = () => { ctx.fillStyle = "#4d96ff"; ctx.fillRect(0, 0, 320, 200); };
+    paint(); setInterval(paint, 100); // keep frames flowing
+    navigator.mediaDevices.getDisplayMedia = () => Promise.resolve((c as any).captureStream(10));
+    (window as any).__captureScreenToChat();
+  });
+  await page.waitForFunction(() => document.querySelectorAll(".chatwin .attachstrip .athumb").length >= 1, { timeout: 8000 });
+  check("📸 runs the capture pipeline into the composer (synthetic display stream)", true);
+  await page.$eval(".chatwin .attachstrip .athumb button", (b) => (b as HTMLElement).click()); // discard it
+
+  // Android share-target: the SW stashes shared images and the shell picks
+  // them up into the composer on the redirected load.
+  const manifest = await (await fetch(BASE + "/manifest.webmanifest")).json();
+  check("the PWA manifest declares the share target", manifest?.share_target?.action === "/share");
+  const shared = await page.evaluate(async () => {
+    if (!navigator.serviceWorker?.controller) await navigator.serviceWorker?.ready;
+    const canvas = document.createElement("canvas"); canvas.width = 4; canvas.height = 4;
+    const blob: Blob = await new Promise((res) => canvas.toBlob((b) => res(b as Blob), "image/png"));
+    const form = new FormData();
+    form.append("images", new File([blob], "shot.png", { type: "image/png" }));
+    const r = await fetch("/share", { method: "POST", body: form });
+    return { ok: r.ok, url: r.url };
+  });
+  check("POST /share rides the service worker and redirects into the shell",
+    shared.ok && /shared=1/.test(shared.url));
+  await page.goto(BASE + "/?shared=1", { waitUntil: "networkidle0" });
+  await page.waitForFunction(() => document.getElementById("shell")!.classList.contains("active"), { timeout: 20000 });
+  await page.waitForFunction(() => document.querySelectorAll(".chatwin .attachstrip .athumb").length >= 1, { timeout: 10000 });
+  check("a shared image lands in the chat composer", true);
+  await page.$eval(".chatwin .close", (b) => (b as HTMLElement).click());
+
   // The chat header doubles as a drag handle; its pointerdown handler must NOT
   // preventDefault on interactive controls — that silently kills the model
   // <select>'s native dropdown (regression: "can't click the model selector").
@@ -279,6 +325,8 @@ try {
   // new-chat race: send the first message of a fresh chat and switch away
   // IMMEDIATELY. The id now binds at send time (REST create before ws.send), so
   // the reply can't stream into a conversation no surface owns.
+  await page.click("#chatfab"); // summon a chat window (earlier sections closed theirs)
+  await page.waitForSelector(".chatwin", { timeout: 5000 });
   await page.$eval(".chatwin .wnew", (b) => (b as HTMLElement).click()); // fresh chat in the window
   await page.type(".chatwin .chatcompose input", "race check chat");
   await page.$eval(".chatwin .chatcompose", (f) => (f as HTMLFormElement).requestSubmit());
