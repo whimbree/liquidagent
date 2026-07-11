@@ -474,14 +474,32 @@ pub async fn update(
     if !app_dir.exists() {
         return (StatusCode::CONFLICT, Json(json!({ "error": "not installed — install it instead" }))).into_response();
     }
-    // Refuse mid-merge or with uncommitted app changes: merging onto a dirty
-    // tree loses work, and a second merge on top of conflicts compounds them.
+    // A merge in progress usually means "hands off" — EXCEPT when it's a
+    // conflicted library merge of THIS very app and the human chose replace:
+    // abandoning that merge for the pristine copy is exactly what they're
+    // asking for. Conflicts touching anything else stay untouchable.
     if state.workspace_dir.join(".git").join("MERGE_HEAD").exists() {
-        return (
-            StatusCode::CONFLICT,
-            Json(json!({ "error": "a merge is already in progress — ask liquid to finish resolving it first" })),
-        )
-            .into_response();
+        let unmerged = git_stdout(&state.workspace_dir, &["diff", "--name-only", "--diff-filter=U"])
+            .unwrap_or_default();
+        let scoped_to_app = !unmerged.trim().is_empty()
+            && unmerged.lines().all(|l| l.starts_with(&format!("apps/{app}/")));
+        if body.mode == UpdateMode::Replace && scoped_to_app {
+            if let Err(err) = git(&state.workspace_dir, &["merge", "--abort"]) {
+                warn!("catalog replace of {app}: aborting the stuck merge failed: {err:#}");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({ "error": format!("could not abort the in-progress merge: {err:#}") })),
+                )
+                    .into_response();
+            }
+            info!("catalog replace of {app}: aborted a conflicted merge scoped to the app");
+        } else {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "a merge is already in progress — ask liquid to finish resolving it first" })),
+            )
+                .into_response();
+        }
     }
     let dirty = git_stdout(&state.workspace_dir, &["status", "--porcelain", "--", &format!("apps/{app}")])
         .map(|out| !out.trim().is_empty())

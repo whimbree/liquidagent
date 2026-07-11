@@ -2299,7 +2299,8 @@ async function loadBuildInfo() {
       const badge = document.createElement("span");
       badge.className = "sys-badge";
       row.append(" — ", badge);
-      if (!v.isSha || !repo) badge.textContent = "development build";
+      if (!v.isSha) badge.textContent = "development build";
+      else if (!repo) badge.textContent = "can't check: the system layer predates version reporting — rebuild the guest (microvm -uR)";
       else if (latest === null) badge.textContent = "couldn't check for updates";
       else if (latest.startsWith(v.rev) || v.rev.startsWith(latest)) {
         badge.classList.add("ok");
@@ -2325,6 +2326,19 @@ async function loadBuildInfo() {
     if (module_) {
       line("System layer", module_,
         "the unit/config only refreshes with a guest rebuild (e.g. microvm -uR) — self-update can't reach it");
+    } else if (binary.isSha) {
+      // A nix-built binary with no module stamp = the guest system was built
+      // from a liquidagent revision older than this binary. Say so — this is
+      // the exact drift the panel exists to expose.
+      const row = document.createElement("div");
+      const s = document.createElement("span");
+      s.className = "sys-rev";
+      s.textContent = "unknown";
+      const badge = document.createElement("span");
+      badge.className = "sys-badge warn";
+      badge.textContent = "not stamped — the guest system predates the binary; rebuild it (microvm -uR) to align and check both layers";
+      row.append("System layer ", s, " — ", badge);
+      el.append(row);
     }
   } catch { el.textContent = "version unavailable"; }
 }

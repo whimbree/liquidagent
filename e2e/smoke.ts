@@ -207,6 +207,30 @@ try {
       git("checkout -- apps/stronglifts"); // clean up for later sections
       return r.status === 409;
     })());
+
+    // The stuck-merge incident: a conflicted merge confined to the app must
+    // not brick Replace — abandoning that merge IS the recovery the human is
+    // asking for. Conflicts touching anything else stay hands-off.
+    const conflictOn = async (file: string) => {
+      writeFileSync(join(WS, file), "ours\n");
+      git("add -A"); git('commit -q -m "ours"');
+      await nudge(token);
+      await until("ours deployed", async () => (await j("/api/pipeline", {}, token)).body?.status?.state === "clean");
+      git("checkout -q -b side HEAD~1");
+      writeFileSync(join(WS, file), "theirs\n");
+      git("add -A"); git('commit -q -m "theirs"');
+      git("checkout -q main");
+      try { git("merge -q side"); } catch { /* conflict expected — leaves MERGE_HEAD */ }
+      git("branch -q -D side");
+    };
+    await conflictOn("apps/stronglifts/notes.txt");
+    check("replace recovers from a conflicted merge scoped to the app",
+      (await j("/api/catalog/stronglifts/update", { method: "POST", body: JSON.stringify({ mode: "replace" }) }, token)).status === 200);
+    check("…and the merge state is gone", (() => { try { git("rev-parse -q --verify MERGE_HEAD"); return false; } catch { return true; } })());
+    await conflictOn("NOTES.md");
+    check("…but a merge touching anything else stays hands-off (409)",
+      (await j("/api/catalog/stronglifts/update", { method: "POST", body: JSON.stringify({ mode: "replace" }) }, token)).status === 409);
+    git("merge --abort"); // clean up the deliberate NOTES.md conflict
   }
 
   // --- polyglot backends (ADR 0002): a DECLARED runner, not the bun default ---
