@@ -146,8 +146,16 @@ async function startQuery(prompt: string, resumeSessionId?: string, model?: stri
   });
 }
 
+/** Per-query streaming state: whether any reply text has been streamed yet. */
+type TextStream = { started: boolean };
+
 /** Translate one SDK message into zero or more IPC events. */
-function toEvents(requestId: ConversationId, message: SDKMessage, sawFileTool: { value: boolean }): AgentEvent[] {
+function toEvents(
+  requestId: ConversationId,
+  message: SDKMessage,
+  sawFileTool: { value: boolean },
+  textStream: TextStream,
+): AgentEvent[] {
   switch (message.type) {
     case "system":
       if (message.subtype === "init") {
@@ -159,7 +167,19 @@ function toEvents(requestId: ConversationId, message: SDKMessage, sawFileTool: {
       // Only stream top-level assistant text; subagent streams have a parent.
       if (message.parent_tool_use_id !== null) return [];
       const event = message.event;
+      // A NEW text block after earlier text means the model paused to run
+      // tools between paragraphs. The blocks carry no separator of their own —
+      // without one, "…apps you have first." and "You've got two apps…" fuse
+      // into "first.You've" in the shell and in the persisted message.
+      if (
+        event.type === "content_block_start" &&
+        event.content_block.type === "text" &&
+        textStream.started
+      ) {
+        return [{ type: "token", id: requestId, text: "\n\n" }];
+      }
       if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+        textStream.started = true;
         return [{ type: "token", id: requestId, text: event.delta.text }];
       }
       return [];
@@ -189,12 +209,13 @@ function toEvents(requestId: ConversationId, message: SDKMessage, sawFileTool: {
 
 async function runQuery(requestId: ConversationId, prompt: string, sessionId?: string, model?: string, attachments: Attachment[] = []): Promise<void> {
   const sawFileTool = { value: false };
+  const textStream: TextStream = { started: false };
   currentQueryId = requestId;
   const q = await startQuery(prompt, sessionId, model, attachments);
   activeQuery = q;
   try {
     for await (const message of q) {
-      for (const event of toEvents(requestId, message, sawFileTool)) {
+      for (const event of toEvents(requestId, message, sawFileTool, textStream)) {
         emit(event);
       }
     }
@@ -215,8 +236,9 @@ if (Bun.argv[2] === "--once") {
     process.exit(2);
   }
   const sawFileTool = { value: false };
+  const textStream: TextStream = { started: false };
   for await (const message of await startQuery(prompt)) {
-    for (const event of toEvents(conversationId("once"), message, sawFileTool)) {
+    for (const event of toEvents(conversationId("once"), message, sawFileTool, textStream)) {
       if (event.type === "token") process.stdout.write(event.text);
       if (event.type === "tool") logToStderr(`tool: ${event.name}`);
       if (event.type === "error") logToStderr(`error: ${event.message}`);
