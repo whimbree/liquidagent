@@ -242,8 +242,8 @@ fn write_app_content(dir: &Dir, apps_root: &Path) -> anyhow::Result<()> {
 // --- the 3-way library merge -----------------------------------------------------
 
 pub enum MergeOutcome {
-    /// Merged (or already current); the head to deploy.
-    Merged { head: String },
+    /// Merged (or already current); HEAD is ready to deploy.
+    Merged,
     /// The merge stopped on conflicts; they sit in the working tree for the
     /// agent (or a human) to resolve — nothing was committed or deployed.
     Conflicts { files: Vec<String> },
@@ -298,7 +298,7 @@ fn merge_update(
         ],
     );
     match merged {
-        Ok(()) => Ok(MergeOutcome::Merged { head: git_stdout(workspace_dir, &["rev-parse", "HEAD"])? }),
+        Ok(()) => Ok(MergeOutcome::Merged),
         Err(_) => {
             let files = git_stdout(workspace_dir, &["diff", "--name-only", "--diff-filter=U"])
                 .unwrap_or_default()
@@ -492,7 +492,7 @@ pub async fn update(
                 write_app_content(dir, apps_root)
             };
             match merge_update(&state.workspace_dir, &app, &base, &write) {
-                Ok(MergeOutcome::Merged { .. }) => deploy_head(&state, &app),
+                Ok(MergeOutcome::Merged) => deploy_head(&state, &app),
                 Ok(MergeOutcome::Conflicts { files }) => (
                     StatusCode::CONFLICT,
                     Json(json!({
@@ -642,7 +642,7 @@ mod tests {
         // upstream v2 changes a DIFFERENT file → clean merge, both survive
         let v2 = version(&[("app.json", r#"{"name":"Demo"}"#), ("index.html", "v2"), ("style.css", "plain")]);
         match merge_update(&ws, "demo", &base, &v2).unwrap() {
-            MergeOutcome::Merged { .. } => {}
+            MergeOutcome::Merged => {}
             MergeOutcome::Conflicts { files } => panic!("unexpected conflicts: {files:?}"),
         }
         assert_eq!(std::fs::read_to_string(ws.join("apps/demo/index.html")).unwrap(), "v2");
@@ -669,7 +669,7 @@ mod tests {
             MergeOutcome::Conflicts { files } => {
                 assert!(files.iter().any(|f| f.ends_with("index.html")), "{files:?}");
             }
-            MergeOutcome::Merged { .. } => panic!("expected conflicts"),
+            MergeOutcome::Merged => panic!("expected conflicts"),
         }
         // nothing committed: HEAD moved only by the local edit, and the
         // conflict markers wait in the tree

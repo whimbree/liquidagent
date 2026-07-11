@@ -177,7 +177,7 @@
                    white-space:nowrap; }
   #chat header button { background:transparent; color:var(--dim); padding:0.2rem 0.45rem; }
   #chat header button:hover { color:white; }
-  #modelpick { flex:none; background:var(--panel2); color:#c9c9d4; border:1px solid var(--line);
+  #modelpick, .chatwin .wmodel { flex:none; background:var(--panel2); color:#c9c9d4; border:1px solid var(--line);
                border-radius:8px; font-size:0.72rem; padding:0.15rem 0.2rem; max-width:6.6rem; }
   #convlist { display:none; position:absolute; top:2.9rem; left:0.6rem; right:0.6rem; z-index:5;
               background:#1b1b24; border:1px solid #30303c; border-radius:10px; max-height:50%;
@@ -219,11 +219,11 @@
   #composer input[type="text"], #composer #input { flex:1; min-width:0; }
   #attachbtn, #stopbtn { background:transparent; border:0; color:var(--dim); font-size:1.1rem; padding:0.2rem 0.35rem; cursor:pointer; }
   #attachbtn:hover { color:white; }
-  #attachstrip { display:none; gap:0.4rem; padding:0.4rem 0.8rem 0; flex-wrap:wrap; }
-  #attachstrip.has { display:flex; }
-  #attachstrip .athumb { position:relative; width:3rem; height:3rem; border-radius:8px; overflow:hidden; border:1px solid var(--line); }
-  #attachstrip .athumb img { width:100%; height:100%; object-fit:cover; display:block; }
-  #attachstrip .athumb button { position:absolute; top:0; right:0; background:rgba(0,0,0,0.6); color:#fff; border:0; width:1.1rem; height:1.1rem; font-size:0.7rem; line-height:1; cursor:pointer; border-bottom-left-radius:6px; }
+  .attachstrip { display:none; gap:0.4rem; padding:0.4rem 0.8rem 0; flex-wrap:wrap; }
+  .attachstrip.has { display:flex; }
+  .attachstrip .athumb { position:relative; width:3rem; height:3rem; border-radius:8px; overflow:hidden; border:1px solid var(--line); }
+  .attachstrip .athumb img { width:100%; height:100%; object-fit:cover; display:block; }
+  .attachstrip .athumb button { position:absolute; top:0; right:0; background:rgba(0,0,0,0.6); color:#fff; border:0; width:1.1rem; height:1.1rem; font-size:0.7rem; line-height:1; cursor:pointer; border-bottom-left-radius:6px; }
   .athumbs { display:flex; gap:0.35rem; flex-wrap:wrap; margin-top:0.35rem; }
   .athumbs img { max-width:min(14rem,60%); max-height:11rem; border-radius:8px; border:1px solid var(--line); cursor:zoom-in; display:block; }
   #dragover { position:fixed; inset:0; z-index:95; display:none; align-items:center; justify-content:center; background:rgba(61,123,239,0.14); border:3px dashed var(--accent); font-weight:600; color:#fff; pointer-events:none; }
@@ -487,7 +487,7 @@
     <button id="scrolldown" title="Jump to latest">↓</button>
     <div id="busy"></div>
     <div id="status"></div>
-    <div id="attachstrip"></div>
+    <div id="attachstrip" class="attachstrip"></div>
     <form id="composer">
       <input id="input" placeholder="Ask liquid…" autocomplete="off">
       <input id="attachinput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>

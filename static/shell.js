@@ -17,7 +17,7 @@ const $if = (id) => /** @type {HTMLIFrameElement} */ ($(id));
  * @typedef {{id:string,name:string,icon:string,description:string,visibility?:"public"|"private",surface?:"panel"|"full",has_backend?:boolean,backend?:{state:string},window?:{width?:number,height?:number,minWidth?:number,minHeight?:number}}} App
  * @typedef {{id:number,title:string,model?:string|null}} Conversation
  * @typedef {{title:string,body:string,ts:number}} TrayNotification
- * @typedef {{el:HTMLElement,wid:number,id:number|null,currentBot:HTMLElement|null,log:HTMLElement,input:HTMLInputElement,send:HTMLButtonElement,stop:HTMLButtonElement,status:HTMLElement,title:HTMLElement,convlist:HTMLElement,geom:WinGeom}} ChatWin
+ * @typedef {{el:HTMLElement,wid:number,id:number|null,currentBot:HTMLElement|null,log:HTMLElement,input:HTMLInputElement,send:HTMLButtonElement,stop:HTMLButtonElement,status:HTMLElement,title:HTMLElement,convlist:HTMLElement,geom:WinGeom,model:HTMLSelectElement,pendingModel:string|null,atts:PendingAttachment[],attstrip:HTMLElement}} ChatWin
  * @typedef {{el:HTMLElement,icon:string,label:string}} SwitcherItem
  * @typedef {{icon:string,label:string,run:()=>void}} PaletteItem
  * @typedef {{type:string,conversation_id?:number,text?:string,name?:string,message?:string,session_id?:string,action?:string,app?:string,title?:string,body?:string,apps?:App[],status?:{state?:string,reasoning?:string},busy?:boolean,mode?:string,id?:string,mime?:string}} WsEvent
@@ -935,10 +935,42 @@ function saveChatWins() {
 
 // Point a window at a conversation (or null for a fresh one) — same window.
 /** @param {ChatWin} w @param {number|null} id */
+/** Reflect the window's conversation model (or its pre-creation pick). @param {ChatWin} w */
+function syncWinModel(w) {
+  const conv = conversations.find((c) => c.id === w.id);
+  w.model.value = (conv && conv.model) || w.pendingModel || "default";
+}
+
+/** A model picked before this window's conversation existed applies now.
+ *  @param {ChatWin} w */
+function applyPendingWinModel(w) {
+  if (w.pendingModel == null || w.id == null) return;
+  const m = w.pendingModel;
+  w.pendingModel = null;
+  const conv = conversations.find((c) => c.id === w.id);
+  if (conv) conv.model = m;
+  api(`/api/conversations/${w.id}/model`, { method: "PUT", body: JSON.stringify({ model: m }) }).catch(() => {});
+}
+
+/** Per-window pending-attachment thumbnails. @param {ChatWin} w */
+function renderWinAttachStrip(w) {
+  w.attstrip.innerHTML = "";
+  w.attstrip.classList.toggle("has", w.atts.length > 0);
+  w.atts.forEach((a, i) => {
+    const t = document.createElement("div"); t.className = "athumb";
+    const im = document.createElement("img"); im.src = a.url; t.append(im);
+    const x = document.createElement("button"); x.type = "button"; x.textContent = "✕";
+    x.onclick = () => { w.atts.splice(i, 1); renderWinAttachStrip(w); };
+    t.append(x); w.attstrip.append(t);
+  });
+}
+
+/** @param {ChatWin} w @param {number|null} id */
 async function setConv(w, id) {
   w.id = id; w.currentBot = null;
   const conv = conversations.find(c => c.id === id);
   w.title.textContent = conv ? conv.title : "New chat";
+  syncWinModel(w);
   w.log.innerHTML = "";
   if (id != null) {
     const data = await (await api(`/api/conversations/${id}/messages`)).json();
@@ -1025,6 +1057,7 @@ async function openChatWindow(convId, pos, saved) {
     <div class="titlebar">
       <button class="wconv" title="Conversations">☰</button>
       <span class="tname"></span>
+      <select class="wmodel" title="Model for this chat"></select>
       <button class="wnew" title="New conversation">＋</button>
       <button class="min" title="Minimize">–</button>
       <button class="max" title="Maximize">▢</button>
@@ -1034,8 +1067,11 @@ async function openChatWindow(convId, pos, saved) {
     <div class="chatlog"></div>
     <button class="scrollbtn" title="Jump to latest">↓</button>
     <div class="chatstatus"></div>
+    <div class="attachstrip"></div>
     <form class="chatcompose">
       <input placeholder="Ask liquid…" autocomplete="off">
+      <input class="wattachinput" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+      <button type="button" class="wattach" title="Attach an image">📎</button>
       <button type="button" class="stop" hidden title="Stop">⏹</button>
       <button type="submit" class="send">Send</button>
     </form>`;
@@ -1044,13 +1080,17 @@ async function openChatWindow(convId, pos, saved) {
   const w = {
     el: win, wid: ++chatWinSeq, id: null, currentBot: null,
     log: /** @type {HTMLElement} */ (win.querySelector(".chatlog")),
-    input: /** @type {HTMLInputElement} */ (win.querySelector("input")),
+    input: /** @type {HTMLInputElement} */ (win.querySelector(".chatcompose input")),
     send: /** @type {HTMLButtonElement} */ (win.querySelector(".send")),
     stop: /** @type {HTMLButtonElement} */ (win.querySelector(".stop")),
     status: /** @type {HTMLElement} */ (win.querySelector(".chatstatus")),
     title: /** @type {HTMLElement} */ (win.querySelector(".tname")),
     convlist: /** @type {HTMLElement} */ (win.querySelector(".chatconvlist")),
     geom: { x, y, w: W, h: H },
+    model: /** @type {HTMLSelectElement} */ (win.querySelector(".wmodel")),
+    pendingModel: null,
+    atts: [],
+    attstrip: /** @type {HTMLElement} */ (win.querySelector(".attachstrip")),
   };
   chatWins.set(w.wid, w);
   const scrollBtn = /** @type {HTMLElement} */ (win.querySelector(".scrollbtn"));
@@ -1072,23 +1112,59 @@ async function openChatWindow(convId, pos, saved) {
     const pi = pendingNewChats.indexOf(w); if (pi >= 0) pendingNewChats.splice(pi, 1);
     saveChatWins(); renderDock();
   };
+  // Per-chat model (same semantics as the docked picker: set on the live
+  // conversation, or remembered until this window's first message creates one).
+  ensureModelChoices().then(() => { fillModelSelect(w.model); syncWinModel(w); });
+  w.model.onchange = async () => {
+    const model = w.model.value;
+    if (w.id != null) {
+      const conv = conversations.find((c) => c.id === w.id);
+      if (conv) conv.model = model === "default" ? null : model;
+      try { await api(`/api/conversations/${w.id}/model`, { method: "PUT", body: JSON.stringify({ model }) }); } catch {}
+    } else {
+      w.pendingModel = model === "default" ? null : model;
+    }
+  };
+  // Per-window image attachments: 📎, paste, thumbnails — like the docked chat.
+  const attachInput = /** @type {HTMLInputElement} */ (win.querySelector(".wattachinput"));
+  /** @type {HTMLElement} */ (win.querySelector(".wattach")).onclick = () => attachInput.click();
+  attachInput.addEventListener("change", async () => {
+    for (const f of attachInput.files ?? []) {
+      try { const a = await fileToAttachment(f); if (a) w.atts.push(a); } catch {}
+    }
+    attachInput.value = "";
+    renderWinAttachStrip(w);
+  });
+  w.input.addEventListener("paste", async (e) => {
+    const items = e.clipboardData?.items; if (!items) return;
+    /** @type {File[]} */ const files = [];
+    for (let i = 0; i < items.length; i++) { const it = items[i]; if (it && it.kind === "file" && it.type.startsWith("image/")) { const f = it.getAsFile(); if (f) files.push(f); } }
+    if (!files.length) return;
+    e.preventDefault();
+    for (const f of files) { try { const a = await fileToAttachment(f); if (a) w.atts.push(a); } catch {} }
+    renderWinAttachStrip(w);
+  });
   /** @type {HTMLFormElement} */ (win.querySelector("form")).onsubmit = async (e) => {
     e.preventDefault();
     const content = w.input.value.trim();
-    if (!content || !ws || ws.readyState !== WebSocket.OPEN) return;
-    bubbleIn(w.log, "user", content);
+    const atts = w.atts;
+    if ((!content && atts.length === 0) || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const b = bubbleIn(w.log, "user", content);
+    if (atts.length) b.append(attachmentThumbs(atts.map((a) => ({ url: a.url }))));
     w.currentBot = null;
     w.input.value = "";
+    w.atts = []; renderWinAttachStrip(w); // instant — `atts` holds the captured array
     // Fresh chat: bind an id before sending (see createConversation). The FIFO
     // below survives only as a fallback when the create call fails.
     let target = w.id;
     if (target == null) {
-      const id = await createConversation(content.slice(0, 48));
+      const id = await createConversation(content.slice(0, 48) || "Image");
       if (id !== null) {
         target = id;
         if (w.id == null) {
           w.id = id;
           w.title.textContent = conversations.find((c) => c.id === id)?.title ?? "";
+          applyPendingWinModel(w);
           saveChatWins(); renderDock(); renderConvList();
         }
       } else if (!pendingNewChats.includes(w)) {
@@ -1096,7 +1172,7 @@ async function openChatWindow(convId, pos, saved) {
       }
     }
     if (!ws || ws.readyState !== WebSocket.OPEN) return; // dropped during the create
-    ws.send(JSON.stringify({ type: "user_message", content, conversation_id: target }));
+    ws.send(JSON.stringify({ type: "user_message", content, conversation_id: target, attachments: atts.map((a) => ({ mime: a.mime, data: a.data })) }));
   };
   w.stop.onclick = () => {
     if (ws && ws.readyState === WebSocket.OPEN && w.id != null) {
@@ -1261,11 +1337,20 @@ async function loadConversations() {
 let modelChoices = [];
 /** @type {string | null} model chosen for a not-yet-created chat */
 let pendingModel = null;
-async function loadModelChoices() {
-  try { modelChoices = (await (await api("/api/settings")).json()).models || []; } catch { modelChoices = []; }
-  const sel = /** @type {HTMLSelectElement} */ ($("modelpick"));
+async function ensureModelChoices() {
+  if (modelChoices.length === 0) {
+    try { modelChoices = (await (await api("/api/settings")).json()).models || []; } catch { modelChoices = []; }
+  }
+  return modelChoices;
+}
+/** @param {HTMLSelectElement} sel */
+function fillModelSelect(sel) {
   sel.innerHTML = "";
   for (const m of modelChoices) { const o = document.createElement("option"); o.value = m.id; o.textContent = m.label; sel.append(o); }
+}
+async function loadModelChoices() {
+  await ensureModelChoices();
+  fillModelSelect(/** @type {HTMLSelectElement} */ ($("modelpick")));
   syncModelPick();
 }
 function syncModelPick() {
@@ -1520,6 +1605,7 @@ function connect() {
       if (wnew) {
         wnew.id = ev.conversation_id;
         wnew.title.textContent = ev.title ?? "";
+        applyPendingWinModel(wnew);
         saveChatWins(); renderDock();
       } else if (activeConversation === null) {
         activeConversation = ev.conversation_id;

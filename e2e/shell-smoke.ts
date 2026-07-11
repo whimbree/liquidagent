@@ -159,6 +159,27 @@ try {
   await page.waitForFunction(() => /fake harness/i.test(document.querySelector(".chatwin .msg.bot .mbody")?.textContent || ""), { timeout: 15000 });
   check("a chat window opens and streams a reply", true);
 
+  // chat windows are full-featured peers of the docked chat (no second-class chat)
+  await page.waitForFunction(() => ((document.querySelector(".chatwin .wmodel") as HTMLSelectElement)?.options.length ?? 0) >= 3, { timeout: 5000 });
+  check("chat windows have the per-chat model picker", true);
+  check("…and image attach (📎 + strip)",
+    !!(await page.$(".chatwin .wattach")) && !!(await page.$(".chatwin .attachstrip")));
+  // picking a model on the window's conversation persists it
+  const picked = await page.$eval(".chatwin .wmodel", (s) => {
+    const sel = s as HTMLSelectElement;
+    sel.value = sel.options[1]!.value; // first non-default choice, whatever the ids are
+    sel.dispatchEvent(new Event("change"));
+    return sel.value;
+  });
+  await sleep(500);
+  check("the window's model choice lands on its conversation",
+    await page.evaluate(async (want) => {
+      const token = localStorage.getItem("liquid_token");
+      const r = await fetch("/api/conversations", { headers: { Authorization: `Bearer ${token}` } });
+      const convs = (await r.json()).conversations ?? [];
+      return convs.some((c: any) => c.model === want);
+    }, picked));
+
   // command palette
   await page.keyboard.down("Control"); await page.keyboard.press("k"); await page.keyboard.up("Control");
   await page.waitForFunction(() => document.getElementById("palette")!.classList.contains("open"), { timeout: 3000 });
