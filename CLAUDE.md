@@ -137,8 +137,11 @@ in release but ~2.6s in a debug build.
 
 Rust: no `unwrap()` in non-test code (use `?`/`context`/`expect("why")`), named
 constants over magic numbers, domain errors via `anyhow::Context`. TypeScript:
-strict, no `any`, validated at the IPC boundary. Commit messages: imperative, explain
-*why*, no attribution trailers. Never commit `.env`, `dev-data/`, `dev-workspace/`.
+strict, no `any`, validated at the IPC boundary. Commit messages: **conventional
+commits** (`type(scope): subject` — feat, fix, docs, refactor, test, chore, ci;
+scope = module or area, e.g. `feat(catalog): …`, `fix(shell): …`), subject
+imperative, body explains *why*, no attribution trailers. Never commit `.env`,
+`dev-data/`, `dev-workspace/`.
 
 ## Code standards (ADR 0001)
 
