@@ -70,6 +70,11 @@ const server = spawn("cargo", ["run", "--quiet"], {
     LIQUID_WORKSPACE_DIR: WS,
     LIQUID_DATA_DIR: DATA,
     LIQUID_PIPELINE_MODE: "vibe",
+    // An EMPTY mix home: the dev machine's ~/.mix (auto-installed rebar3 from
+    // a past `mix deps.get`) must not mask what a fresh production box lacks —
+    // that exact masking shipped the "Could not find rebar3" crash-loop.
+    // Offline builds stand on MIX_PATH (hex) + MIX_REBAR3 alone.
+    MIX_HOME: join(root, "mix-home"),
   },
   stdio: ["ignore", "ignore", "inherit"],
 });

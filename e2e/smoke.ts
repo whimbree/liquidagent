@@ -231,6 +231,14 @@ try {
     check("…but a merge touching anything else stays hands-off (409)",
       (await j("/api/catalog/stronglifts/update", { method: "POST", body: JSON.stringify({ mode: "replace" }) }, token)).status === 409);
     git("merge --abort"); // clean up the deliberate NOTES.md conflict
+
+    // The cross-app deadlock, named: a merge parked on app A must tell an
+    // action on app B WHOSE conflicts are in the way.
+    await conflictOn("apps/stronglifts/other.txt");
+    const blocked = await j("/api/catalog/whiteboard/install", { method: "POST" }, token);
+    git("merge --abort");
+    check("a parked merge names its app in the error, instead of a bare 'merge in progress'",
+      blocked.status !== 200 || /stronglifts/.test(JSON.stringify(blocked.body ?? {})));
   }
 
   // --- polyglot backends (ADR 0002): a DECLARED runner, not the bun default ---

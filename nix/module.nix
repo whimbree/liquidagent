@@ -193,6 +193,10 @@ in
         # (same trick as nixpkgs mixRelease), so an Elixir backend's vendored
         # deps compile offline on first boot.
         MIX_PATH = "${pkgs.beamPackages.hex}/lib/erlang/lib/hex/ebin";
+        # …and rebar3 for Erlang deps (:telemetry): without it mix tries to
+        # FETCH rebar3 mid-compile and dies non-interactively (production
+        # incident 2026-07-12 — masked everywhere a ~/.mix already had it).
+        MIX_REBAR3 = "${pkgs.beamPackages.rebar3}/bin/rebar3";
       } // lib.optionalAttrs (cfg.chromiumPackage != null) {
         # Enables the agent's screenshot tool (headless chromium capture).
         LIQUID_CHROME = "${cfg.chromiumPackage}/bin/chromium";

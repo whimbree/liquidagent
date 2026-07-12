@@ -340,6 +340,34 @@ pub(crate) fn ensure_pipeline_quiet(state: &AppState) -> Result<(), Response> {
     }
 }
 
+/// A parked merge blocks every library commit (git refuses partial commits
+/// mid-merge) — so name the culprit: "a merge is in progress" without WHICH
+/// app's merge sends a human hunting through the wrong app entirely.
+/// Returns None when no merge is parked. Callers that can RECOVER (replace,
+/// scoped to its own app) decide that before consulting this.
+fn merge_parked(state: &AppState) -> Option<Response> {
+    if !state.workspace_dir.join(".git").join("MERGE_HEAD").exists() {
+        return None;
+    }
+    let unmerged = git_stdout(&state.workspace_dir, &["diff", "--name-only", "--diff-filter=U"])
+        .unwrap_or_default();
+    let culprit = unmerged
+        .lines()
+        .find_map(|l| l.strip_prefix("apps/").and_then(|rest| rest.split('/').next()))
+        .map(|a| format!("a library update of {a} is parked on conflicts"))
+        .unwrap_or_else(|| "a merge is in progress".to_string());
+    Some(
+        (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "error": format!("{culprit} — ask liquid to resolve it, or use replace on that app to abandon it"),
+                "conflicts": unmerged.lines().collect::<Vec<_>>(),
+            })),
+        )
+            .into_response(),
+    )
+}
+
 /// Shared preconditions for install/update: the target must be a library app
 /// and the pipeline must be quiet.
 fn guard(state: &AppState, app: &str) -> Result<(), Response> {
@@ -431,6 +459,9 @@ pub async fn install(State(state): State<AppState>, UrlPath(app): UrlPath<String
     if let Err(denied) = guard(&state, &app) {
         return denied;
     }
+    if let Some(denied) = merge_parked(&state) {
+        return denied; // fail BEFORE extracting: a parked merge blocks the commit anyway
+    }
     if state.workspace_dir.join("apps").join(&app).exists() {
         return (
             StatusCode::CONFLICT,
@@ -493,12 +524,8 @@ pub async fn update(
                     .into_response();
             }
             info!("catalog replace of {app}: aborted a conflicted merge scoped to the app");
-        } else {
-            return (
-                StatusCode::CONFLICT,
-                Json(json!({ "error": "a merge is already in progress — ask liquid to finish resolving it first" })),
-            )
-                .into_response();
+        } else if let Some(denied) = merge_parked(&state) {
+            return denied;
         }
     }
     let dirty = git_stdout(&state.workspace_dir, &["status", "--porcelain", "--", &format!("apps/{app}")])

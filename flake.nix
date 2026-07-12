@@ -40,6 +40,9 @@
           # MIX_PATH (the same trick nixpkgs' mixRelease uses), so vendored
           # hex deps compile offline.
           MIX_PATH = "${pkgs.beamPackages.hex}/lib/erlang/lib/hex/ebin";
+          # …and rebar3 for the Erlang deps (:telemetry) — without this mix
+          # tries to FETCH rebar3 on first compile and dies non-interactively.
+          MIX_REBAR3 = "${pkgs.beamPackages.rebar3}/bin/rebar3";
         };
       });
 
